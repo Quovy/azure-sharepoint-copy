@@ -398,7 +398,7 @@ def subscription_args(subscription):
     return ("--subscription", subscription) if subscription else ()
 
 
-def discover(subscription):
+def discover(subscription, resource_group=None):
     """Find every deployed copy job by tag. This is the only state lookup."""
     records = az_json(
         "containerapp",
@@ -408,10 +408,28 @@ def discover(subscription):
         "--query",
         f"[?tags.workload=='{WORKLOAD_TAG}' && tags.copyJob != null]",
     )
+    if resource_group:
+        records = [
+            r for r in records if r["resourceGroup"].lower() == resource_group.lower()
+        ]
     if not records:
+        where = f" in resource group {resource_group}" if resource_group else ""
         fail(
-            "No deployed copy jobs were found in this subscription. "
+            f"No deployed copy jobs were found{where}. "
             "Check that you selected the right subscription with 'az account set'."
+        )
+    # More than one deployment can share a subscription, and job names are only
+    # unique within a deployment. Silently picking one could point a live-mode
+    # switch at somebody else's production job, so ambiguity is always fatal.
+    by_name = {}
+    for record in records:
+        by_name.setdefault(record["tags"]["copyJob"], []).append(record["resourceGroup"])
+    ambiguous = {n: sorted(set(g)) for n, g in by_name.items() if len(set(g)) > 1}
+    if ambiguous:
+        detail = "; ".join(f"'{n}' in {', '.join(g)}" for n, g in sorted(ambiguous.items()))
+        fail(
+            f"Job name(s) exist in more than one deployment: {detail}. "
+            "Re-run with --resource-group to say which deployment you mean."
         )
     jobs = {}
     for record in records:
@@ -453,8 +471,8 @@ def discover(subscription):
     return jobs
 
 
-def deployed_job(subscription, name):
-    jobs = discover(subscription)
+def deployed_job(subscription, name, resource_group=None):
+    jobs = discover(subscription, resource_group)
     if name not in jobs:
         available = ", ".join(sorted(jobs)) or "(none)"
         fail(f"Job '{name}' is not deployed. Deployed jobs: {available}")
@@ -649,7 +667,7 @@ def cmd_params(args):
 
 
 def cmd_list(args):
-    jobs = discover(args.subscription)
+    jobs = discover(args.subscription, args.resource_group)
     print(f"{'JOB':<20} {'MODE':<8} {'SCHEDULE':<16} {'AZURE RESOURCE'}")
     for name in sorted(jobs):
         record = jobs[name]
@@ -660,7 +678,7 @@ def cmd_list(args):
 
 
 def cmd_status(args):
-    record = deployed_job(args.subscription, args.job)
+    record = deployed_job(args.subscription, args.job, args.resource_group)
     env = record["env"]
     mode = "LIVE COPY" if env.get("COPY_DRY_RUN") == "false" else "dry run"
     parked = record["cron"] == PARKED_CRON
@@ -705,7 +723,7 @@ def cmd_status(args):
 
 
 def cmd_start(args):
-    record = deployed_job(args.subscription, args.job)
+    record = deployed_job(args.subscription, args.job, args.resource_group)
     mode = "LIVE COPY" if record["env"].get("COPY_DRY_RUN") == "false" else "dry run"
     run(
         "az",
@@ -726,7 +744,7 @@ def cmd_start(args):
 
 def cmd_apply(args):
     job = load_job_named(args.job)
-    record = deployed_job(args.subscription, args.job)
+    record = deployed_job(args.subscription, args.job, args.resource_group)
     if not job["copy"]["dryRun"]:
         confirm(f"LIVE COPY {args.job}", f"Type 'LIVE COPY {args.job}' to publish this live configuration: ")
     # An already-active schedule follows the file. A parked one stays parked so
@@ -746,7 +764,7 @@ def cmd_apply(args):
 
 
 def cmd_pull(args):
-    jobs = discover(args.subscription)
+    jobs = discover(args.subscription, args.resource_group)
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     for name in sorted(jobs):
         config = env_to_config(jobs[name])
@@ -757,7 +775,7 @@ def cmd_pull(args):
 
 
 def cmd_enable(args):
-    record = deployed_job(args.subscription, args.job)
+    record = deployed_job(args.subscription, args.job, args.resource_group)
     schedule = record["env"].get("COPY_SCHEDULE_UTC", "")
     if not schedule:
         fail(f"Job '{args.job}' has no COPY_SCHEDULE_UTC value to activate.")
@@ -768,13 +786,13 @@ def cmd_enable(args):
 
 
 def cmd_disable(args):
-    record = deployed_job(args.subscription, args.job)
+    record = deployed_job(args.subscription, args.job, args.resource_group)
     update_job(args.subscription, record, cron=PARKED_CRON)
     print(f"[{args.job}] Schedule parked. The job will not run until you enable it again.")
 
 
 def cmd_go_live(args):
-    record = deployed_job(args.subscription, args.job)
+    record = deployed_job(args.subscription, args.job, args.resource_group)
     if record["env"].get("COPY_DRY_RUN") == "false":
         print(f"[{args.job}] Already in live mode.")
         return
@@ -794,7 +812,7 @@ def cmd_go_live(args):
 
 
 def cmd_dry_run(args):
-    record = deployed_job(args.subscription, args.job)
+    record = deployed_job(args.subscription, args.job, args.resource_group)
     env_values = dict(record["env"])
     env_values["COPY_DRY_RUN"] = "true"
     update_job(args.subscription, record, env_values=env_values)
@@ -802,7 +820,7 @@ def cmd_dry_run(args):
 
 
 def cmd_grant_source(args):
-    record = deployed_job(args.subscription, args.job)
+    record = deployed_job(args.subscription, args.job, args.resource_group)
     job = load_job_named(args.job)
     subnet = subnet_id_for(record)
     run(
@@ -830,7 +848,7 @@ def cmd_grant_source(args):
 
 
 def cmd_revoke_source(args):
-    record = deployed_job(args.subscription, args.job)
+    record = deployed_job(args.subscription, args.job, args.resource_group)
     job = load_job_named(args.job)
     subnet = subnet_id_for(record)
     _, ok = run(
@@ -856,7 +874,7 @@ def cmd_revoke_source(args):
 
 
 def cmd_set_secret(args):
-    record = deployed_job(args.subscription, args.job)
+    record = deployed_job(args.subscription, args.job, args.resource_group)
     if not record["vaultName"] or not record["secretName"]:
         fail(f"Job '{args.job}' has no Key Vault secret reference.")
     secret = getpass.getpass(
@@ -961,7 +979,15 @@ def build_parser():
         prog="copyctl.py",
         description="Operate the Azure to SharePoint copy service.",
     )
-    parser.add_argument(
+    # Shared options live on every subcommand so they can be given where an
+    # operator naturally types them: copyctl.py status default -g my-group
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--resource-group",
+        "-g",
+        help="Resource group holding the copy service. Required when one subscription has more than one deployment.",
+    )
+    common.add_argument(
         "--subscription",
         default=os.environ.get("AZURE_SUBSCRIPTION_ID"),
         help="Azure subscription holding the copy service. Defaults to your active az subscription.",
@@ -969,7 +995,7 @@ def build_parser():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     def add(name, handler, help_text, needs_job=False):
-        subparser = subparsers.add_parser(name, help=help_text)
+        subparser = subparsers.add_parser(name, help=help_text, parents=[common])
         if needs_job:
             subparser.add_argument("job", help="Job name, as shown by 'copyctl.py list'.")
         subparser.set_defaults(handler=handler)

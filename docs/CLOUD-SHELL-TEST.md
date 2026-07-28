@@ -37,7 +37,7 @@ rclone version | head -1
 **2. Get the script.**
 
 ```bash
-git clone --branch v0.2.2 --depth 1 \
+git clone --branch v0.2.3 --depth 1 \
   https://github.com/Quovy/azure-sharepoint-copy.git
 cd azure-sharepoint-copy
 ```
