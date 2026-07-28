@@ -4,12 +4,15 @@ Scheduled, one-way copy jobs from Azure Files or ADLS Gen2 into SharePoint
 document libraries. Everything runs inside your own Azure subscription and
 Microsoft 365 tenant. Nothing is ever deleted at the destination.
 
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FFinalMindAI%2Fazure-sharepoint-copy%2Fv0.1.0%2Finfra%2Fmain.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2FFinalMindAI%2Fazure-sharepoint-copy%2Fv0.1.0%2Finfra%2FcreateUiDefinition.json)
+
 ## Install
 
 Two supported paths. Both deploy the same template.
 
-**Azure portal.** Open the Deploy to Azure link for this release and fill in the
-form. It creates the resource group, the network, and one row per copy job.
+**Azure portal.** Click the button above and fill in the form. It creates the
+network, the jobs, and one row per copy route. The button is pinned to a
+release tag, so what you deploy does not change when this repository does.
 
 **Azure CLI.** For scripted or repeatable installs:
 
