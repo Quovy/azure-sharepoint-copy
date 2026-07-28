@@ -1,0 +1,49 @@
+// REFERENCE ONLY - copy this file to jobs/<job-name>.json before editing.
+// Every .json file in jobs/ defines one independently scheduled copy job.
+// A test asserts this file and jobs/default.json stay identical once the
+// comments are stripped, so the two cannot drift.
+{
+  // Use 2-20 lowercase letters, numbers, or internal hyphens.
+  // The file name must match this value: jobs/default.json holds "default".
+  "name": "default",
+  "source": {
+    // Use "azure_files" for an Azure file share or "adls_gen2" for ADLS Gen2.
+    "type": "azure_files",
+    "subscriptionId": "00000000-0000-4000-8000-000000000000",
+    "resourceGroup": "rg-source-files",
+    "storageAccount": "examplestorage",
+    // The Azure Files share name or the ADLS Gen2 container name.
+    "containerOrShare": "source-share",
+    // Leave empty for the share root, or give a relative folder path.
+    "path": "",
+    // Leave empty to copy everything under the path above, or list exact
+    // relative files and folders. Cannot be combined with modifiedOnOrAfter.
+    "includePaths": [],
+    // Optional YYYY-MM-DD cutoff on last-modified time, not creation time.
+    "modifiedOnOrAfter": ""
+  },
+  "destination": {
+    "tenantId": "00000000-0000-4000-8000-000000000001",
+    // The Sites.Selected application's Client ID. One application may serve
+    // several jobs on the same site, but never two different sites.
+    "clientId": "00000000-0000-4000-8000-000000000002",
+    // The exact site URL this application was granted write access to.
+    "siteUrl": "https://contoso.sharepoint.com/sites/Records",
+    // The document library's display name, resolved on every run.
+    "library": "Documents",
+    // Leave empty for the library root, or give a relative folder path.
+    "path": ""
+  },
+  "copy": {
+    // "skip" or "replace_if_changed". Destination files are never deleted.
+    "existingFiles": "skip",
+    // Keep true until you have reviewed a dry-run execution for this job.
+    "dryRun": true,
+    // Five-field UTC cron. This example runs daily at 02:00 UTC. The schedule
+    // stays parked until you run: ./copyctl.py enable <job>
+    "scheduleUtc": "0 2 * * *",
+    // Stop one execution after this many minutes. Keep it shorter than the
+    // gap between runs so two executions cannot overlap.
+    "timeoutMinutes": 360
+  }
+}

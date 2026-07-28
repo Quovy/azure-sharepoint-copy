@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "baseName": {
+      "value": "file-copy"
+    },
+    "vnetAddressPrefix": {
+      "value": "10.240.0.0/16"
+    },
+    "containerAppsSubnetPrefix": {
+      "value": "10.240.0.0/27"
+    },
+    "containerImage": {
+      "value": "REPLACE_ME_RUN_scripts/publish-image.sh"
+    },
+    "jobs": {
+      "value": []
+    }
+  }
+}

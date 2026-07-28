@@ -1,0 +1,420 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/0.1.2-preview/CreateUIDefinition.MultiVm.json#",
+  "handler": "Microsoft.Azure.CreateUIDef",
+  "version": "0.1.2-preview",
+  "parameters": {
+    "basics": [
+      {
+        "name": "introduction",
+        "type": "Microsoft.Common.InfoBox",
+        "visible": true,
+        "options": {
+          "icon": "Info",
+          "text": "This deploys scheduled, one-way copy jobs from Azure Files or ADLS Gen2 into SharePoint document libraries. Nothing is ever deleted at the destination. Every job is created in dry-run mode with its schedule parked, so no file moves until you review a dry run and activate it.",
+          "uri": "https://learn.microsoft.com/azure/container-apps/jobs"
+        }
+      },
+      {
+        "name": "baseName",
+        "type": "Microsoft.Common.TextBox",
+        "label": "Name prefix",
+        "defaultValue": "file-copy",
+        "toolTip": "Used to name every resource this template creates. 3-20 lowercase letters, numbers, or hyphens.",
+        "constraints": {
+          "required": true,
+          "regex": "^[a-z0-9]([a-z0-9-]{1,18}[a-z0-9])$",
+          "validationMessage": "Use 3-20 lowercase letters, numbers, or hyphens. It must start and end with a letter or number."
+        },
+        "visible": true
+      },
+      {
+        "name": "prerequisites",
+        "type": "Microsoft.Common.InfoBox",
+        "visible": true,
+        "options": {
+          "icon": "Warning",
+          "text": "Before you continue: create one single-tenant Microsoft Entra application per copy job, give each Microsoft Graph application permission Sites.Selected with admin consent, and grant each one write access to only its own SharePoint site. You will need each application's Client ID below. Client secrets are NOT entered here \u2014 you store them after deployment with copyctl.py set-secret."
+        }
+      }
+    ],
+    "steps": [
+      {
+        "name": "source",
+        "label": "Source",
+        "elements": [
+          {
+            "name": "sourceInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "Pick the storage account holding the files to copy. This form supports one source storage account in the subscription selected on the Basics tab. To copy from several accounts or another subscription, deploy with the command line path instead."
+            }
+          },
+          {
+            "name": "storageAccount",
+            "type": "Microsoft.Solutions.ResourceSelector",
+            "label": "Source storage account",
+            "toolTip": "The account holding the Azure Files share or ADLS Gen2 container to copy from.",
+            "resourceType": "Microsoft.Storage/storageAccounts",
+            "options": {
+              "filter": {
+                "subscription": "onBasics"
+              }
+            },
+            "constraints": {
+              "required": true
+            }
+          },
+          {
+            "name": "accessNote",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Warning",
+              "text": "Each job receives a read-only role on this source. For Azure Files that role is Storage File Data Privileged Reader, which is read-only but applies account-wide and bypasses per-file NTFS ACLs. Use a source-dedicated storage account if that is too broad. If this account has a storage firewall, run copyctl.py grant-source after deployment to add the copy subnet to it."
+            }
+          }
+        ]
+      },
+      {
+        "name": "jobs",
+        "label": "Copy jobs",
+        "elements": [
+          {
+            "name": "jobsInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "Add one row per source-to-destination route. Each row needs its own Entra application Client ID, because a Sites.Selected grant is scoped to a single SharePoint site."
+            }
+          },
+          {
+            "name": "jobsGrid",
+            "type": "Microsoft.Common.EditableGrid",
+            "ariaLabel": "Copy jobs to create",
+            "label": "Copy jobs",
+            "constraints": {
+              "width": "Full",
+              "rows": {
+                "count": {
+                  "min": 1,
+                  "max": 10
+                }
+              },
+              "columns": [
+                {
+                  "id": "name",
+                  "header": "Job name",
+                  "width": "0.7fr",
+                  "element": {
+                    "name": "name",
+                    "type": "Microsoft.Common.TextBox",
+                    "placeholder": "invoices",
+                    "constraints": {
+                      "required": true,
+                      "regex": "^[a-z0-9]([a-z0-9-]{0,18}[a-z0-9])?$",
+                      "validationMessage": "Use 2-20 lowercase letters, numbers, or internal hyphens."
+                    }
+                  }
+                },
+                {
+                  "id": "sourceType",
+                  "header": "Source type",
+                  "width": "0.8fr",
+                  "element": {
+                    "name": "sourceType",
+                    "type": "Microsoft.Common.DropDown",
+                    "defaultValue": "Azure Files",
+                    "constraints": {
+                      "required": true,
+                      "allowedValues": [
+                        {
+                          "label": "Azure Files",
+                          "value": "azure_files"
+                        },
+                        {
+                          "label": "ADLS Gen2",
+                          "value": "adls_gen2"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "id": "containerOrShare",
+                  "header": "Share / container",
+                  "width": "0.9fr",
+                  "element": {
+                    "name": "containerOrShare",
+                    "type": "Microsoft.Common.TextBox",
+                    "placeholder": "source-share",
+                    "constraints": {
+                      "required": true,
+                      "regex": "^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])$",
+                      "validationMessage": "Use 3-63 lowercase letters, numbers, or internal hyphens."
+                    }
+                  }
+                },
+                {
+                  "id": "sourcePath",
+                  "header": "Source folder (optional)",
+                  "width": "0.9fr",
+                  "element": {
+                    "name": "sourcePath",
+                    "type": "Microsoft.Common.TextBox",
+                    "placeholder": "Invoices/2026",
+                    "constraints": {
+                      "required": false,
+                      "regex": "^$|^(?!/)(?!.*\\.\\.)[^:\\r\\n\\t]*$",
+                      "validationMessage": "Leave empty for the share root, or use a relative path with no leading slash, no colon, and no '..'."
+                    }
+                  }
+                },
+                {
+                  "id": "siteUrl",
+                  "header": "SharePoint site URL",
+                  "width": "1.4fr",
+                  "element": {
+                    "name": "siteUrl",
+                    "type": "Microsoft.Common.TextBox",
+                    "placeholder": "https://contoso.sharepoint.com/sites/Records",
+                    "constraints": {
+                      "required": true,
+                      "regex": "^https://[a-zA-Z0-9.-]+/[^?#\\r\\n\\t]+$",
+                      "validationMessage": "Enter the exact HTTPS site URL, with no query string or fragment."
+                    }
+                  }
+                },
+                {
+                  "id": "library",
+                  "header": "Document library",
+                  "width": "0.9fr",
+                  "element": {
+                    "name": "library",
+                    "type": "Microsoft.Common.TextBox",
+                    "defaultValue": "Documents",
+                    "constraints": {
+                      "required": true,
+                      "regex": "^[^\\r\\n\\t]{1,120}$",
+                      "validationMessage": "Enter the library's display name, for example Documents."
+                    }
+                  }
+                },
+                {
+                  "id": "destPath",
+                  "header": "Destination folder (optional)",
+                  "width": "0.9fr",
+                  "element": {
+                    "name": "destPath",
+                    "type": "Microsoft.Common.TextBox",
+                    "placeholder": "Imported",
+                    "constraints": {
+                      "required": false,
+                      "regex": "^$|^(?!/)(?!.*\\.\\.)[^:\\r\\n\\t]*$",
+                      "validationMessage": "Leave empty for the library root, or use a relative path with no leading slash, no colon, and no '..'."
+                    }
+                  }
+                },
+                {
+                  "id": "clientId",
+                  "header": "Entra Client ID",
+                  "width": "1.2fr",
+                  "element": {
+                    "name": "clientId",
+                    "type": "Microsoft.Common.TextBox",
+                    "placeholder": "00000000-0000-0000-0000-000000000000",
+                    "constraints": {
+                      "required": true,
+                      "regex": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                      "validationMessage": "Enter the application's Client ID as a GUID. Each job needs a different application."
+                    }
+                  }
+                },
+                {
+                  "id": "scheduleUtc",
+                  "header": "Schedule (UTC)",
+                  "width": "1fr",
+                  "element": {
+                    "name": "scheduleUtc",
+                    "type": "Microsoft.Common.DropDown",
+                    "defaultValue": "Daily at 02:00",
+                    "constraints": {
+                      "required": true,
+                      "allowedValues": [
+                        {
+                          "label": "Daily at 02:00",
+                          "value": "0 2 * * *"
+                        },
+                        {
+                          "label": "Weekdays at 02:00",
+                          "value": "0 2 * * 1-5"
+                        },
+                        {
+                          "label": "Every 6 hours",
+                          "value": "0 */6 * * *"
+                        },
+                        {
+                          "label": "Hourly",
+                          "value": "0 * * * *"
+                        },
+                        {
+                          "label": "Weekly, Sunday 03:00",
+                          "value": "0 3 * * 0"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "behavior",
+        "label": "Copy behavior",
+        "elements": [
+          {
+            "name": "dryRunNotice",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Warning",
+              "text": "Every job is deployed in dry-run mode with its schedule parked. After deployment, store each credential with copyctl.py set-secret, run copyctl.py start to produce a dry-run report, review it, then use copyctl.py go-live and copyctl.py enable. Nothing is copied until you do."
+            }
+          },
+          {
+            "name": "existingFiles",
+            "type": "Microsoft.Common.DropDown",
+            "label": "When a file already exists at the destination",
+            "defaultValue": "Skip it",
+            "toolTip": "Applies to every job. Destination files are never deleted under either setting.",
+            "constraints": {
+              "required": true,
+              "allowedValues": [
+                {
+                  "label": "Skip it",
+                  "value": "skip"
+                },
+                {
+                  "label": "Replace it if the source changed",
+                  "value": "replace_if_changed"
+                }
+              ]
+            },
+            "visible": true
+          },
+          {
+            "name": "timeoutMinutes",
+            "type": "Microsoft.Common.Slider",
+            "label": "Stop an execution after (minutes)",
+            "defaultValue": 360,
+            "min": 5,
+            "max": 1440,
+            "showStepMarkers": false,
+            "toolTip": "Keep this shorter than the gap between scheduled runs so executions cannot overlap.",
+            "constraints": {
+              "required": true
+            },
+            "visible": true
+          }
+        ]
+      },
+      {
+        "name": "network",
+        "label": "Network",
+        "elements": [
+          {
+            "name": "networkInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "The copy jobs run in a dedicated virtual network created by this template. Choose private ranges that do not overlap any network you connect to. The defaults are fine unless 10.240.x.x is already in use."
+            }
+          },
+          {
+            "name": "vnetAddressPrefix",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Virtual network address space",
+            "defaultValue": "10.240.0.0/16",
+            "toolTip": "An RFC 1918 private range in CIDR notation.",
+            "constraints": {
+              "required": true,
+              "regex": "^(10|172|192)\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}/[0-9]{1,2}$",
+              "validationMessage": "Enter a private IPv4 range in CIDR notation, for example 10.240.0.0/16."
+            },
+            "visible": true
+          },
+          {
+            "name": "containerAppsSubnetPrefix",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Container Apps subnet",
+            "defaultValue": "10.240.0.0/27",
+            "toolTip": "Must sit inside the virtual network above and be /27 or larger.",
+            "constraints": {
+              "required": true,
+              "regex": "^(10|172|192)\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}/(1[0-9]|2[0-7])$",
+              "validationMessage": "Enter a private IPv4 range in CIDR notation with a prefix of /27 or larger, for example 10.240.0.0/27."
+            },
+            "visible": true
+          }
+        ]
+      },
+      {
+        "name": "advanced",
+        "label": "Advanced",
+        "elements": [
+          {
+            "name": "imageInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "The copy container is published and pinned by digest, so the deployed bytes are fixed. If your organization blocks public registries, import that exact digest into your own registry with 'az acr import' and paste the resulting reference here."
+            }
+          },
+          {
+            "name": "containerImage",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Container image",
+            "defaultValue": "",
+            "toolTip": "A digest-pinned image reference. Leave the published default unless you imported it into your own registry.",
+            "constraints": {
+              "required": true,
+              "regex": "^[a-z0-9./_-]+(:[A-Za-z0-9._-]+)?@sha256:[a-f0-9]{64}$",
+              "validationMessage": "Enter a digest-pinned image reference ending in @sha256:<64 hex characters>."
+            },
+            "visible": true
+          },
+          {
+            "name": "containerRegistryResourceId",
+            "type": "Microsoft.Solutions.ResourceSelector",
+            "label": "Private container registry (only if you imported the image)",
+            "toolTip": "Leave empty when the image above is publicly pullable. Container Apps resolves the image while creating each job, so a private registry needs to be named here for the pull to be authorized.",
+            "resourceType": "Microsoft.ContainerRegistry/registries",
+            "options": {
+              "filter": {
+                "subscription": "onBasics"
+              }
+            },
+            "constraints": {
+              "required": false
+            }
+          }
+        ]
+      }
+    ],
+    "outputs": {
+      "location": "[location()]",
+      "baseName": "[basics('baseName')]",
+      "vnetAddressPrefix": "[steps('network').vnetAddressPrefix]",
+      "containerAppsSubnetPrefix": "[steps('network').containerAppsSubnetPrefix]",
+      "containerImage": "[steps('advanced').containerImage]",
+      "containerRegistryResourceId": "[coalesce(steps('advanced').containerRegistryResourceId.id, '')]",
+      "jobs": "[map(steps('jobs').jobsGrid, (job) => parse(concat('{\"name\":\"', coalesce(job.name, ''), '\",\"source\":{\"type\":\"', coalesce(job.sourceType, 'azure_files'), '\",\"subscriptionId\":\"', subscription().subscriptionId, '\",\"resourceGroup\":\"', first(skip(split(steps('source').storageAccount.id, '/'), 4)), '\",\"storageAccount\":\"', steps('source').storageAccount.name, '\",\"containerOrShare\":\"', coalesce(job.containerOrShare, ''), '\",\"path\":\"', coalesce(job.sourcePath, ''), '\",\"includePaths\":[],\"modifiedOnOrAfter\":\"\"},\"destination\":{\"tenantId\":\"', subscription().tenantId, '\",\"clientId\":\"', coalesce(job.clientId, ''), '\",\"siteUrl\":\"', coalesce(job.siteUrl, ''), '\",\"library\":\"', coalesce(job.library, 'Documents'), '\",\"path\":\"', coalesce(job.destPath, ''), '\"},\"copy\":{\"existingFiles\":\"', steps('behavior').existingFiles, '\",\"dryRun\":true,\"scheduleUtc\":\"', coalesce(job.scheduleUtc, '0 2 * * *'), '\",\"timeoutMinutes\":', string(steps('behavior').timeoutMinutes), '}}')))]"
+    }
+  }
+}

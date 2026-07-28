@@ -1,0 +1,7 @@
+.gitignore export-ignore
+.gitattributes export-ignore
+dist/ export-ignore
+scripts/publish-image.sh export-ignore
+scripts/package-release.sh export-ignore
+tests/ export-ignore
+VERSION export-ignore

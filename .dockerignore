@@ -1,0 +1,14 @@
+.git
+.gitattributes
+.gitignore
+VERSION
+CHECKLIST.md
+README.md
+SECURITY.md
+copyctl.py
+infra
+jobs
+scripts
+tests
+dist
+*.log

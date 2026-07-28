@@ -1,0 +1,26 @@
+{
+  "name": "default",
+  "source": {
+    "type": "azure_files",
+    "subscriptionId": "00000000-0000-4000-8000-000000000000",
+    "resourceGroup": "rg-source-files",
+    "storageAccount": "examplestorage",
+    "containerOrShare": "source-share",
+    "path": "",
+    "includePaths": [],
+    "modifiedOnOrAfter": ""
+  },
+  "destination": {
+    "tenantId": "00000000-0000-4000-8000-000000000001",
+    "clientId": "00000000-0000-4000-8000-000000000002",
+    "siteUrl": "https://contoso.sharepoint.com/sites/Records",
+    "library": "Documents",
+    "path": ""
+  },
+  "copy": {
+    "existingFiles": "skip",
+    "dryRun": true,
+    "scheduleUtc": "0 2 * * *",
+    "timeoutMinutes": 360
+  }
+}
