@@ -428,8 +428,13 @@ def discover(subscription):
             if "/secrets/" in url:
                 vault_name = urllib.parse.urlsplit(url).hostname.split(".")[0]
                 secret_name = url.rsplit("/secrets/", 1)[1].split("/")[0]
+        identities = (record.get("identity") or {}).get("userAssignedIdentities") or {}
+        identity_client_id = next(
+            (v.get("clientId", "") for v in identities.values() if v.get("clientId")), ""
+        )
         jobs[record["tags"]["copyJob"]] = {
             "name": record["tags"]["copyJob"],
+            "identityClientId": identity_client_id,
             "resourceName": record["name"],
             "resourceGroup": record["resourceGroup"],
             "resourceId": record["id"],
@@ -527,6 +532,25 @@ def env_to_config(record):
     }
 
 
+def merged_env(deployed, from_job_file, identity_client_id=""):
+    """Overlay the job file's variables onto what is already deployed.
+
+    The deployment template sets variables no job file knows about, notably
+    AZURE_MANAGED_IDENTITY_CLIENT_ID and the rclone tuning values. Replacing the
+    environment with only the job file's fields would drop them and leave the
+    job unable to authenticate to its source.
+
+    The identity variable is additionally restored from the job's own assigned
+    identity when it is missing, so a job left in that state can be repaired by
+    running apply rather than redeploying.
+    """
+    merged = dict(deployed)
+    merged.update(from_job_file)
+    if not merged.get("AZURE_MANAGED_IDENTITY_CLIENT_ID") and identity_client_id:
+        merged["AZURE_MANAGED_IDENTITY_CLIENT_ID"] = identity_client_id
+    return merged
+
+
 def update_job(subscription, record, env_values=None, cron=None, timeout_minutes=None):
     args = [
         "containerapp",
@@ -539,13 +563,13 @@ def update_job(subscription, record, env_values=None, cron=None, timeout_minutes
         record["resourceName"],
     ]
     if env_values is not None:
-        env_values = dict(env_values)
-        # Carry forward the recorded credential version; a full replacement
-        # would otherwise drop it and lose the audit trail.
-        existing_version = record["env"].get("COPY_SECRET_VERSION")
-        if existing_version and "COPY_SECRET_VERSION" not in env_values:
-            env_values["COPY_SECRET_VERSION"] = existing_version
-        pairs = [f"{key}={value}" for key, value in sorted(env_values.items()) if key != SECRET_ENV_NAME]
+        pairs = [
+            f"{key}={value}"
+            for key, value in sorted(
+                merged_env(record["env"], env_values, record.get("identityClientId", "")).items()
+            )
+            if key != SECRET_ENV_NAME
+        ]
         # The credential is a secret reference rather than a literal value, so a
         # full replacement has to restate it or the job would lose it.
         pairs.append(f"{SECRET_ENV_NAME}=secretref:{SECRET_REF_NAME}")

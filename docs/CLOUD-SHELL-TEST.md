@@ -120,19 +120,3 @@ none of those concessions:
 ./copyctl.py start <job>
 ./copyctl.py status <job>
 ```
-
-## If you want the full local run anyway
-
-For a lab or a source account with no firewall, supply a service principal
-instead of a managed identity. `env_auth` falls through to the environment
-credential chain:
-
-```bash
-export AZURE_MANAGED_IDENTITY_CLIENT_ID=<service-principal-app-id>
-export AZURE_CLIENT_SECRET=<service-principal-secret>
-export AZURE_TENANT_ID=<tenant-guid>
-```
-
-The service principal still needs the read role above. This path is **not
-verified** — it follows from rclone's backend contract rather than a tested run,
-and it applies to Azure Files only.

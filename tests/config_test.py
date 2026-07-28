@@ -161,6 +161,43 @@ check(
     "copyctl.py pull needs these to rebuild a job file",
 )
 
+# --- apply must not drop variables the deployment template owns -------------
+sys.path.insert(0, str(ROOT))
+import copyctl  # noqa: E402
+
+TEMPLATE_OWNED = {
+    "AZURE_MANAGED_IDENTITY_CLIENT_ID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "RCLONE_TRANSFERS": "4",
+    "RCLONE_CHECKERS": "8",
+    "COPY_SECRET_VERSION": "abc123",
+}
+deployed = {**TEMPLATE_OWNED, "SOURCE_PATH": "old", "COPY_DRY_RUN": "true"}
+from_file = copyctl.config_to_env(copyctl.load_job(ROOT / "jobs" / "default.json"))
+merged = copyctl.merged_env(deployed, from_file)
+
+for key, value in TEMPLATE_OWNED.items():
+    check(
+        f"apply-preserves-{key}",
+        merged.get(key) == value,
+        f"apply would drop {key}, leaving the job unable to run",
+    )
+# A job whose identity variable was lost is repaired by apply, not left broken.
+repaired = copyctl.merged_env(
+    {k: v for k, v in deployed.items() if k != "AZURE_MANAGED_IDENTITY_CLIENT_ID"},
+    from_file,
+    identity_client_id="11111111-2222-3333-4444-555555555555",
+)
+check(
+    "apply-repairs-missing-identity",
+    repaired.get("AZURE_MANAGED_IDENTITY_CLIENT_ID") == "11111111-2222-3333-4444-555555555555",
+    "apply should restore the identity variable from the job's own identity",
+)
+check(
+    "apply-overwrites-job-fields",
+    merged["SOURCE_PATH"] == from_file["SOURCE_PATH"],
+    "the job file must win for fields it owns",
+)
+
 if failures:
     print("configuration tests FAILED", file=sys.stderr)
     for failure in failures:
