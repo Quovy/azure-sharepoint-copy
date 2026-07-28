@@ -25,9 +25,9 @@ param jobs array
 
 var usePrivateRegistry = !empty(containerRegistryResourceId)
 var registryIdSegments = split(containerRegistryResourceId, '/')
-var registrySubscriptionId = usePrivateRegistry ? registryIdSegments[2] : ''
-var registryResourceGroup = usePrivateRegistry ? registryIdSegments[4] : ''
-var registryName = usePrivateRegistry ? last(registryIdSegments) : ''
+var registrySubscriptionId = usePrivateRegistry ? registryIdSegments[2] : subscription().subscriptionId
+var registryResourceGroup = usePrivateRegistry ? registryIdSegments[4] : resourceGroup().name
+var registryName = usePrivateRegistry ? last(registryIdSegments) : 'unused'
 
 // Taken from the image reference rather than the conditional module's output:
 // referencing that output would evaluate even on the public-registry path,
@@ -192,10 +192,11 @@ resource secretReadAssignments 'Microsoft.Authorization/roleAssignments@2022-04-
 
 // Container Apps resolves the image while creating the job, so AcrPull has to
 // be in place before the jobs below are created.
-module registryAccess 'registry-access.bicep' = if (usePrivateRegistry) {
+module registryAccess 'registry-access.bicep' = {
   name: 'registry-access-${uniqueString(containerRegistryResourceId)}'
   scope: resourceGroup(registrySubscriptionId, registryResourceGroup)
   params: {
+    enabled: usePrivateRegistry
     registryName: registryName
     principalIds: [for (job, index) in jobs: jobIdentities[index].properties.principalId]
   }

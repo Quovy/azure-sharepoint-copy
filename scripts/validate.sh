@@ -6,13 +6,15 @@ project_root="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
 python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in (
-  "copyctl.py", "tests/config_test.py", "tests/uidefinition_test.py")]'
+  "copyctl.py", "tests/config_test.py", "tests/uidefinition_test.py",
+  "tests/template_test.py")]'
 bash -n scripts/*.sh
 sh -n app/transfer.sh tests/transfer_test.sh
 
 python3 copyctl.py validate
 python3 tests/config_test.py
 python3 tests/uidefinition_test.py
+python3 tests/template_test.py
 sh tests/transfer_test.sh
 
 if command -v shellcheck >/dev/null 2>&1; then

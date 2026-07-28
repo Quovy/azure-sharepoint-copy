@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.45.15.27210",
-      "templateHash": "8881715322525361279"
+      "templateHash": "3029749659695361185"
     }
   },
   "parameters": {
@@ -62,9 +62,9 @@
   "variables": {
     "usePrivateRegistry": "[not(empty(parameters('containerRegistryResourceId')))]",
     "registryIdSegments": "[split(parameters('containerRegistryResourceId'), '/')]",
-    "registrySubscriptionId": "[if(variables('usePrivateRegistry'), variables('registryIdSegments')[2], '')]",
-    "registryResourceGroup": "[if(variables('usePrivateRegistry'), variables('registryIdSegments')[4], '')]",
-    "registryName": "[if(variables('usePrivateRegistry'), last(variables('registryIdSegments')), '')]",
+    "registrySubscriptionId": "[if(variables('usePrivateRegistry'), variables('registryIdSegments')[2], subscription().subscriptionId)]",
+    "registryResourceGroup": "[if(variables('usePrivateRegistry'), variables('registryIdSegments')[4], resourceGroup().name)]",
+    "registryName": "[if(variables('usePrivateRegistry'), last(variables('registryIdSegments')), 'unused')]",
     "registryLoginServer": "[if(variables('usePrivateRegistry'), split(parameters('containerImage'), '/')[0], '')]",
     "tags": {
       "workload": "azure-sharepoint-copy"
@@ -378,7 +378,6 @@
       ]
     },
     {
-      "condition": "[variables('usePrivateRegistry')]",
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2025-04-01",
       "name": "[format('registry-access-{0}', uniqueString(parameters('containerRegistryResourceId')))]",
@@ -390,6 +389,9 @@
         },
         "mode": "Incremental",
         "parameters": {
+          "enabled": {
+            "value": "[variables('usePrivateRegistry')]"
+          },
           "registryName": {
             "value": "[variables('registryName')]"
           },
@@ -410,14 +412,20 @@
             "_generator": {
               "name": "bicep",
               "version": "0.45.15.27210",
-              "templateHash": "13114687456872854342"
+              "templateHash": "12063167822437718833"
             }
           },
           "parameters": {
+            "enabled": {
+              "type": "bool",
+              "metadata": {
+                "description": "Whether a private registry is actually in use. When false this module deploys nothing."
+              }
+            },
             "registryName": {
               "type": "string",
               "metadata": {
-                "description": "Name of an existing Azure Container Registry holding the copy image."
+                "description": "Name of an existing Azure Container Registry holding the copy image. Ignored when enabled is false."
               }
             },
             "principalIds": {
@@ -434,25 +442,19 @@
             {
               "copy": {
                 "name": "acrPullAssignments",
-                "count": "[length(parameters('principalIds'))]"
+                "count": "[length(if(parameters('enabled'), parameters('principalIds'), createArray()))]"
               },
               "type": "Microsoft.Authorization/roleAssignments",
               "apiVersion": "2022-04-01",
               "scope": "[resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName'))]",
-              "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName')), parameters('principalIds')[copyIndex()], variables('acrPullRoleDefinitionId'))]",
+              "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName')), if(parameters('enabled'), parameters('principalIds'), createArray())[copyIndex()], variables('acrPullRoleDefinitionId'))]",
               "properties": {
-                "principalId": "[parameters('principalIds')[copyIndex()]]",
+                "principalId": "[if(parameters('enabled'), parameters('principalIds'), createArray())[copyIndex()]]",
                 "principalType": "ServicePrincipal",
                 "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('acrPullRoleDefinitionId'))]"
               }
             }
-          ],
-          "outputs": {
-            "loginServer": {
-              "type": "string",
-              "value": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName')), '2023-11-01-preview').loginServer]"
-            }
-          }
+          ]
         }
       },
       "dependsOn": [
