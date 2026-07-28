@@ -4,7 +4,7 @@ Scheduled, one-way copy jobs from Azure Files or ADLS Gen2 into SharePoint
 document libraries. Everything runs inside your own Azure subscription and
 Microsoft 365 tenant. Nothing is ever deleted at the destination.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FQuovy%2Fazure-sharepoint-copy%2Fv0.2.1%2Finfra%2Fmain.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2FQuovy%2Fazure-sharepoint-copy%2Fv0.2.1%2Finfra%2FcreateUiDefinition.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FQuovy%2Fazure-sharepoint-copy%2Fv0.2.2%2Finfra%2Fmain.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2FQuovy%2Fazure-sharepoint-copy%2Fv0.2.2%2Finfra%2FcreateUiDefinition.json)
 
 ## Install
 
