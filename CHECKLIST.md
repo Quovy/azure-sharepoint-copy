@@ -19,6 +19,9 @@ Work top to bottom. Nothing copies a file until step 5.
 Two jobs may share one application if they target the same site. Two different
 sites always need two applications.
 
+You can verify each application, its site grant, and the library name before
+deploying anything: see [docs/CLOUD-SHELL-TEST.md](docs/CLOUD-SHELL-TEST.md).
+
 ## 2. Deploy
 
 Pick one path.
@@ -44,8 +47,8 @@ Pick one path.
       underneath you:
 
   ```bash
-  git clone --branch v0.1.1 --depth 1 \
-    https://github.com/FinalMindAI/azure-sharepoint-copy.git
+  git clone --branch v0.2.0 --depth 1 \
+    https://github.com/Quovy/azure-sharepoint-copy.git
   cd azure-sharepoint-copy
   ```
 

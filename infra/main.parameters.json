@@ -12,7 +12,7 @@
       "value": "10.240.0.0/27"
     },
     "containerImage": {
-      "value": "ghcr.io/finalmindai/azure-sharepoint-copy@sha256:34b16f673fdfa72d716911a3f800c6a772a97cc94d5b65354b14e3761d6b6294"
+      "value": "ghcr.io/quovy/azure-sharepoint-copy@sha256:34b16f673fdfa72d716911a3f800c6a772a97cc94d5b65354b14e3761d6b6294"
     },
     "jobs": {
       "value": []

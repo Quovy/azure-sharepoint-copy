@@ -4,7 +4,7 @@ Scheduled, one-way copy jobs from Azure Files or ADLS Gen2 into SharePoint
 document libraries. Everything runs inside your own Azure subscription and
 Microsoft 365 tenant. Nothing is ever deleted at the destination.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FFinalMindAI%2Fazure-sharepoint-copy%2Fv0.1.1%2Finfra%2Fmain.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2FFinalMindAI%2Fazure-sharepoint-copy%2Fv0.1.1%2Finfra%2FcreateUiDefinition.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FQuovy%2Fazure-sharepoint-copy%2Fv0.2.0%2Finfra%2Fmain.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2FQuovy%2Fazure-sharepoint-copy%2Fv0.2.0%2Finfra%2FcreateUiDefinition.json)
 
 ## Install
 
@@ -59,6 +59,10 @@ actually deployed.
 
 Follow [CHECKLIST.md](CHECKLIST.md) for the full first-run sequence, and read
 [SECURITY.md](SECURITY.md) before deploying.
+
+To check an Entra application, its site grant, and a library name before
+deploying anything, see
+[docs/CLOUD-SHELL-TEST.md](docs/CLOUD-SHELL-TEST.md).
 
 ## Changing a job later
 
