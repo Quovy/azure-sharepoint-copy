@@ -136,7 +136,9 @@ reason rather than copying anything.
   ```
 
 - [ ] Run one controlled live execution and verify the destination in
-      SharePoint:
+      SharePoint. Open a few representative Office documents rather than
+      comparing sizes or hashes: SharePoint rewrites those formats on upload,
+      so functional review is the appropriate check.
 
   ```bash
   ./copyctl.py start default

@@ -105,6 +105,10 @@ run_transfer() {
   assert_contains "default" "$output" "DEST_DRIVE_ID=drive-1"
   assert_contains "default" "$output" "--dry-run"
   assert_contains "default" "$output" "--ignore-existing"
+  # SharePoint rewrites Office files, so size and hash comparison must stay off
+  # or every such file is re-uploaded on every run.
+  assert_contains "default" "$output" "--ignore-size"
+  assert_contains "default" "$output" "--ignore-checksum"
   assert_contains "default" "$output" "dry_run=true"
   assert_missing "default" "$output" "sync"
   [ "$failures" -eq 0 ] || exit 1

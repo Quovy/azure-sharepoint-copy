@@ -66,6 +66,10 @@ Edit `jobs/<name>.json`, then:
 ./copyctl.py apply <name>
 ```
 
+SharePoint rewrites some uploaded Office files, so the copy uses rclone's
+SharePoint compatibility settings and a successful copy is not a byte-for-byte
+guarantee. See [SECURITY.md](SECURITY.md).
+
 `apply` updates the deployed job in place. Paths, filters, copy mode, dry-run,
 schedule, and timeout all change without redeploying the template or the image.
 Applying a configuration never starts a parked schedule.

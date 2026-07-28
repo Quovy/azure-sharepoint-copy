@@ -101,6 +101,13 @@ The runtime wrapper contains no destination-delete operation and never calls
 - `dryRun: true` adds `--dry-run`.
 - `includePaths` becomes `--files-from-raw`; unsafe relative paths are rejected.
 - `modifiedOnOrAfter` becomes `--max-age`, based on last-modified time.
+- `--ignore-size --ignore-checksum` are always applied. These are rclone's
+  documented SharePoint compatibility settings: SharePoint rewrites some
+  uploaded files, mainly Microsoft Office formats, so destination size and hash
+  legitimately differ from the source. Without them every such file would look
+  changed and be re-uploaded on every run. Comparison falls back to
+  modification time, and **a successful copy is therefore not a byte-for-byte
+  or file-size attestation.**
 
 Every job deploys in dry-run mode with its schedule parked. Going live requires
 typing `LIVE COPY <job>` at a prompt, and activating a schedule is a separate
@@ -151,6 +158,10 @@ Monitor/SIEM retention and access controls where logs are compliance evidence.
   modelled and could still overlap.
 - SharePoint path length and character restrictions still apply, and file names
   are normalized by SharePoint.
+- SharePoint may rewrite uploaded Office files, so this package cannot
+  guarantee that destination bytes or size match the source even when the
+  document is functionally equivalent. Verify those formats by opening them,
+  not by comparing hashes.
 - Azure Files NTFS ACLs are not preserved in SharePoint.
 - `modifiedOnOrAfter` uses modification time; portable creation-time filtering
   is not available across both supported source types.

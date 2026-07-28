@@ -264,6 +264,13 @@ destination_remote="destination:"
 [ -z "$DEST_PATH" ] || destination_remote="${destination_remote}${DEST_PATH}"
 
 # `copy` never deletes at the destination. `sync` must never appear here.
+#
+# --ignore-size and --ignore-checksum are rclone's documented SharePoint
+# compatibility settings. SharePoint rewrites some uploaded files, mainly
+# Microsoft Office formats, so destination size and hash legitimately differ
+# from the source. Without these, every such file would look changed and be
+# re-uploaded on every run. The trade-off is that a successful copy is not a
+# byte-for-byte attestation; comparison falls back to modification time.
 set -- copy "$source_remote" "$destination_remote" \
   --create-empty-src-dirs \
   --checkers "${RCLONE_CHECKERS:-8}" \
@@ -274,6 +281,8 @@ set -- copy "$source_remote" "$destination_remote" \
   --low-level-retries 10 \
   --onedrive-upload-cutoff 4Mi \
   --onedrive-chunk-size 10Mi \
+  --ignore-size \
+  --ignore-checksum \
   --stats 30s \
   --use-json-log \
   --log-level INFO
