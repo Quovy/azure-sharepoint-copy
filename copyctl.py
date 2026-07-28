@@ -582,8 +582,26 @@ def cmd_env(args):
         print(f"{key}={value}")
 
 
+def published_image():
+    """The image this release was built against.
+
+    Defaulting to it means an operator never has to hunt for the digest, and
+    cannot accidentally deploy a different one than the release was tested with.
+    """
+    path = ROOT / "infra" / "main.parameters.json"
+    document = read_json(path, str(path))
+    value = document.get("parameters", {}).get("containerImage", {}).get("value", "")
+    if "@sha256:" not in value:
+        fail(
+            f"{path} does not contain a digest-pinned image. "
+            "Pass --image explicitly, or use a released version of this package."
+        )
+    return value
+
+
 def cmd_params(args):
     jobs = load_jobs()
+    image = args.image or published_image()
     document = {
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
         "contentVersion": "1.0.0.0",
@@ -591,7 +609,7 @@ def cmd_params(args):
             "baseName": {"value": args.base_name},
             "vnetAddressPrefix": {"value": args.vnet},
             "containerAppsSubnetPrefix": {"value": args.subnet},
-            "containerImage": {"value": args.image},
+            "containerImage": {"value": image},
             "jobs": {"value": jobs},
         },
     }
@@ -940,7 +958,10 @@ def build_parser():
     add("env", cmd_env, "Print the container environment one job file produces.", needs_job=True)
 
     params = add("params", cmd_params, "Render an ARM parameters file from jobs/*.json.")
-    params.add_argument("--image", required=True, help="Digest-pinned container image reference.")
+    params.add_argument(
+        "--image",
+        help="Digest-pinned container image. Defaults to the one this release was built against.",
+    )
     params.add_argument(
         "--registry-id",
         help=(

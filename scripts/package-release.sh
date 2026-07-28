@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build the customer-facing archive from committed content only.
+# Maintainer tooling. Customers install with git clone at a release tag;
+# this only builds an optional offline archive for air-gapped reviews.
 set -euo pipefail
 
 project_root="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"

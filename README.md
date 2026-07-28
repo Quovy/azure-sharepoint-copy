@@ -4,7 +4,7 @@ Scheduled, one-way copy jobs from Azure Files or ADLS Gen2 into SharePoint
 document libraries. Everything runs inside your own Azure subscription and
 Microsoft 365 tenant. Nothing is ever deleted at the destination.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FFinalMindAI%2Fazure-sharepoint-copy%2Fv0.1.0%2Finfra%2Fmain.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2FFinalMindAI%2Fazure-sharepoint-copy%2Fv0.1.0%2Finfra%2FcreateUiDefinition.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FFinalMindAI%2Fazure-sharepoint-copy%2Fv0.1.1%2Finfra%2Fmain.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2FFinalMindAI%2Fazure-sharepoint-copy%2Fv0.1.1%2Finfra%2FcreateUiDefinition.json)
 
 ## Install
 
@@ -21,7 +21,7 @@ az group create --name rg-azure-sharepoint-copy --location eastus
 
 # Describe your jobs in jobs/*.json, then render the parameters file.
 ./copyctl.py validate
-./copyctl.py params --image <published-image@sha256:...> --out my-params.json
+./copyctl.py params --out my-params.json      # uses this release's pinned image
 
 az deployment group what-if \
   --resource-group rg-azure-sharepoint-copy \

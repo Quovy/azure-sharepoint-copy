@@ -40,12 +40,13 @@ Pick one path.
 
 ### Azure CLI
 
-- [ ] Verify and extract the release archive:
+- [ ] Get the package at a fixed release tag, so what you deploy cannot change
+      underneath you:
 
   ```bash
-  sha256sum -c azure-sharepoint-copy-v0.1.0.zip.sha256
-  unzip azure-sharepoint-copy-v0.1.0.zip
-  cd azure-sharepoint-copy-v0.1.0
+  git clone --branch v0.1.1 --depth 1 \
+    https://github.com/FinalMindAI/azure-sharepoint-copy.git
+  cd azure-sharepoint-copy
   ```
 
 - [ ] Edit `jobs/default.json` beside its commented reference. Copy the file to
@@ -61,7 +62,7 @@ Pick one path.
 
   ```bash
   ./copyctl.py validate
-  ./copyctl.py params --image <published-image@sha256:...> --out my-params.json
+  ./copyctl.py params --out my-params.json
   ```
 
 - [ ] Create the resource group and preview the deployment:
