@@ -86,13 +86,37 @@ source storage account.
 
 ## What gets created
 
-| Resource | Purpose |
-| --- | --- |
-| Container Apps environment + VNet | Runs the jobs on a dedicated subnet |
-| One Container Apps job per copy job | The schedule, the configuration, the identity |
-| One user-assigned managed identity per job | Read-only access to that job's source |
-| Key Vault | Holds one Entra client secret per job |
-| Log Analytics workspace | 90 days of execution logs |
+Everything below is created in the resource group you deploy into, tagged
+`workload=azure-sharepoint-copy`. Names derive from the `baseName` parameter,
+which defaults to `file-copy`.
+
+| Resource | Azure type | Name | Details |
+| --- | --- | --- | --- |
+| Virtual network | `Microsoft.Network/virtualNetworks` | `<baseName>-vnet` | `10.240.0.0/16` by default (`vnetAddressPrefix`) |
+| Subnet | (inside that VNet) | `container-apps` | `10.240.0.0/27` by default (`containerAppsSubnetPrefix`), delegated to `Microsoft.App/environments`, with a `Microsoft.Storage.Global` service endpoint |
+| Container Apps environment | `Microsoft.App/managedEnvironments` | `<baseName>-environment` | Consumption workload profile, not zone redundant, injected into the subnet above, logs to the workspace below |
+| Log Analytics workspace | `Microsoft.OperationalInsights/workspaces` | `<baseName>-logs` | `PerGB2018`, 90 day retention |
+| Key Vault | `Microsoft.KeyVault/vaults` | `<baseName>-<hash>` (24 chars) | Standard, RBAC authorization, soft delete with 7 day retention, no purge protection, public network access enabled |
+| Copy job — one per job | `Microsoft.App/jobs` | `<baseName>-<job>` | Schedule trigger, parallelism 1, retry limit 1, replica timeout from `timeoutMinutes` |
+| Managed identity — one per job | `Microsoft.ManagedIdentity/userAssignedIdentities` | `<baseName>-<job>-identity` | Assigned to that job only |
+| Key Vault secret — one per job | `Microsoft.KeyVault/vaults/secrets` | `sharepoint-<job>` | Created holding the placeholder `secret-not-set`; `copyctl.py set-secret` writes the real Entra client secret, which never passes through the template or its deployment history |
+
+Every job is created with the cron expression `0 0 31 2 *` — a date that never
+occurs — so the schedule is deployed but parked until `copyctl.py enable`
+installs the real one.
+
+Role assignments, some of which land outside the deployment resource group:
+
+| Role | Scope | Assigned to |
+| --- | --- | --- |
+| Key Vault Secrets User | That job's secret, not the whole vault | Each job's identity |
+| Storage File Data Privileged Reader | The whole source storage account | Each `azure_files` job's identity |
+| Storage Blob Data Reader | The single source container | Each `adls_gen2` job's identity |
+| AcrPull | The registry named by `containerRegistryResourceId` | Every job identity, only when a private registry is configured |
+
+Azure Files OAuth-over-REST uses backup semantics, so its role is read-only but
+account-wide and bypasses per-file NTFS ACLs. Use a source-dedicated storage
+account if that is too broad. See [SECURITY.md](SECURITY.md).
 
 There is no container registry and no build step. The image is published ahead
 of time and pinned by digest.
