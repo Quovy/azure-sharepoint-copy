@@ -270,6 +270,28 @@ def load_job(path):
     if not 3 <= len(container) <= 63 or not NAME_PATTERN.fullmatch(container):
         fail(f"{label}.source.containerOrShare must use 3-63 lowercase letters, numbers, or internal hyphens.")
 
+    # A misconfigured job once had containerOrShare set to the storage account
+    # name, with the real share/container name shifted down into path. rclone
+    # built a REST URL whose share segment was the account name, Azure returned
+    # 404 ShareNotFound, and the 404 read as missing data instead of a config
+    # error. Both shapes of that mistake are caught here rather than in Azure.
+    if container == storage_account:
+        fail(
+            f"{label}.source.containerOrShare equals storageAccount ('{storage_account}'). "
+            f"containerOrShare must be the share or container name, not the storage account. "
+            f"If '{storage_account}' is actually the share name, move it to path and set "
+            "containerOrShare to the real share/container name."
+        )
+    path_segments = text(source["path"], f"{label}.source.path", allow_empty=True).split("/", 1)
+    if path_segments[0] == container:
+        remainder = path_segments[1] if len(path_segments) > 1 else ""
+        fail(
+            f"{label}.source.path starts with '{container}', which already is containerOrShare. "
+            f"rclone appends path to containerOrShare, so this would look for "
+            f"{container}/{container}/... on the source. Drop the leading '{container}' from path: "
+            f"set path to '{remainder}'."
+        )
+
     include_paths = source["includePaths"]
     if not isinstance(include_paths, list):
         fail(f"{label}.source.includePaths must be a JSON array.")

@@ -121,6 +121,22 @@ fits["copy"]["scheduleUtc"] = "0 * * * *"
 fits["copy"]["timeoutMinutes"] = 30
 expect_success("non-overlapping-schedule", {"default.json": fits})
 
+# --- containerOrShare / path must not be shifted by one level ---------------
+expect_failure(
+    "container-equals-storage-account",
+    with_job(source__containerOrShare="examplestorage"),
+    "containerOrShare equals storageAccount",
+)
+expect_failure(
+    "path-duplicates-share-name",
+    with_job(source__path="source-share/Invoices/2026"),
+    "already is containerOrShare",
+)
+expect_success(
+    "path-merely-resembles-share-name",
+    with_job(source__path="source-share-archive/Invoices/2026"),
+)
+
 # --- one Entra application per site, shared within a site -------------------
 same_site = copy.deepcopy(JOB)
 same_site["name"] = "second"
