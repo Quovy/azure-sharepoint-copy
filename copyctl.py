@@ -500,6 +500,27 @@ def workspace_id_for(subscription, record):
 # first poll is delayed rather than spent on a query that cannot yet succeed.
 PREVIEW_FIRST_POLL_SECONDS = 20
 PREVIEW_POLL_SECONDS = 5
+# A preview waits a minute or two with nothing to report. Ticking faster than it
+# polls keeps the elapsed counter moving, so the wait cannot be read as a hang.
+PREVIEW_TICK_SECONDS = 1
+
+
+def preview_progress(elapsed, note):
+    """Overwrite one line with the elapsed time, only when a person is watching.
+
+    Piped or redirected output stays clean for scripting.
+    """
+    if not sys.stdout.isatty():
+        return
+    minutes, seconds = divmod(int(elapsed), 60)
+    sys.stdout.write(f"\r  {minutes}:{seconds:02d} elapsed - {note}".ljust(72))
+    sys.stdout.flush()
+
+
+def clear_preview_progress():
+    if sys.stdout.isatty():
+        sys.stdout.write("\r".ljust(72) + "\r")
+        sys.stdout.flush()
 
 
 def preview_preflight(subscription, workspace):
@@ -572,28 +593,39 @@ def wait_for_execution_stats(subscription, workspace, execution, wait_seconds):
     precise: the statistics are written when rclone finishes, while the
     execution is not marked complete until its replica is torn down.
     """
-    deadline = time.monotonic() + wait_seconds
-    time.sleep(min(PREVIEW_FIRST_POLL_SECONDS, max(0, wait_seconds)))
+    started = time.monotonic()
+    deadline = started + wait_seconds
+    next_query = started + min(PREVIEW_FIRST_POLL_SECONDS, max(0, wait_seconds))
+    note = "starting the execution"
     while True:
-        terminal = []
-        for row in execution_outcome_rows(subscription, workspace, execution):
-            line = row["Log_s"]
-            if '"stats"' in line:
-                try:
-                    stats = json.loads(line).get("stats")
-                except json.JSONDecodeError:
-                    stats = None
-                if stats:
-                    return stats
-            else:
-                terminal.append(line)
-        # A run that fails before rclone starts never writes statistics, so the
-        # wrapper's own terminal records end the wait instead of the deadline.
-        if terminal:
-            return {"_failed": terminal}
+        now = time.monotonic()
+        if now >= next_query:
+            preview_progress(now - started, "reading results")
+            terminal = []
+            for row in execution_outcome_rows(subscription, workspace, execution):
+                line = row["Log_s"]
+                if '"stats"' in line:
+                    try:
+                        stats = json.loads(line).get("stats")
+                    except json.JSONDecodeError:
+                        stats = None
+                    if stats:
+                        clear_preview_progress()
+                        return stats
+                else:
+                    terminal.append(line)
+            # A run that fails before rclone starts never writes statistics, so
+            # the wrapper's terminal records end the wait, not the deadline.
+            if terminal:
+                clear_preview_progress()
+                return {"_failed": terminal}
+            next_query = time.monotonic() + PREVIEW_POLL_SECONDS
+            note = "waiting for the execution to finish"
         if time.monotonic() >= deadline:
+            clear_preview_progress()
             return None
-        time.sleep(PREVIEW_POLL_SECONDS)
+        preview_progress(time.monotonic() - started, note)
+        time.sleep(PREVIEW_TICK_SECONDS)
 
 
 def human_bytes(count):
@@ -911,7 +943,7 @@ def cmd_preview(args):
     execution = (started or {}).get("name") or ""
     if not execution:
         fail("Azure did not return an execution name for the preview run.")
-    print(f"\nPreview execution {execution} started. Waiting for results...")
+    print(f"\nPreview execution {execution} started. Waiting for results (usually 1-2 minutes).")
 
     stats = wait_for_execution_stats(args.subscription, workspace, execution, args.wait)
     if stats is None:
