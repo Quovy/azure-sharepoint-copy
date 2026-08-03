@@ -211,6 +211,78 @@ missing_result, _ = run_set("source.path", "x", job="ghost")
 check("set-missing-job", missing_result.returncode != 0, "expected a missing job file to be refused")
 check("set-missing-job-message", "does not exist" in missing_result.stderr, missing_result.stderr.strip())
 
+
+# --- get: read one field, or list them all ----------------------------------
+def run_get(*arguments, jobs=None, job="default"):
+    with tempfile.TemporaryDirectory() as directory:
+        jobs_path = Path(directory) / "jobs"
+        jobs_path.mkdir()
+        for filename, config in (jobs or {"default.json": copy.deepcopy(JOB)}).items():
+            (jobs_path / filename).write_text(json.dumps(config, indent=2) + "\n")
+        return subprocess.run(
+            [sys.executable, str(COPYCTL), "get", job, *arguments],
+            env={**os.environ, "COPY_JOBS_DIR": str(jobs_path)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+
+def expect_get(label, field, expected, jobs=None):
+    result = run_get(field, jobs=jobs)
+    check(label, result.returncode == 0, result.stderr.strip())
+    check(label, result.stdout == expected + "\n", f"printed {result.stdout!r}")
+
+
+# A plain string prints bare: a shell reading one value must not have to strip
+# JSON quoting off it.
+expect_get("get-text", "destination.library", JOB["destination"]["library"])
+expect_get("get-schedule", "copy.scheduleUtc", JOB["copy"]["scheduleUtc"])
+expect_get("get-boolean", "copy.dryRun", "true")
+expect_get("get-number", "copy.timeoutMinutes", str(JOB["copy"]["timeoutMinutes"]))
+expect_get("get-empty-text", "source.path", "")
+expect_get("get-list", "source.includePaths", "[]")
+paths = copy.deepcopy(JOB)
+paths["source"]["includePaths"] = ["Invoices/2026", "Reports"]
+expect_get("get-list-values", "source.includePaths", '["Invoices/2026", "Reports"]', {"default.json": paths})
+
+listed = run_get()
+check("get-lists-fields", listed.returncode == 0, listed.stderr.strip())
+listed_fields = [line.split()[0] for line in listed.stdout.splitlines()]
+check(
+    "get-lists-every-settable-field",
+    listed_fields == [f"{section}.{name}" for section in ("source", "destination", "copy") for name in JOB[section]],
+    f"listed {listed_fields}",
+)
+check("get-listing-omits-name", "name" not in listed_fields, "the job name is fixed by the filename")
+
+# What 'get' prints, 'set' must accept back unchanged. This is the property that
+# lets an operator copy a value out, edit it, and put it back.
+for round_trip_field in ("destination.library", "copy.scheduleUtc", "copy.dryRun", "copy.timeoutMinutes"):
+    section, _, name = round_trip_field.partition(".")
+    printed = run_get(round_trip_field).stdout.rstrip("\n")
+    _, after = run_set(round_trip_field, printed)
+    check(
+        f"get-set-round-trip-{round_trip_field}",
+        after is not None and after[section][name] == JOB[section][name],
+        f"setting the printed value changed {round_trip_field}",
+    )
+
+unknown_get = run_get("copy.retries")
+check("get-unknown-field", unknown_get.returncode != 0, "expected an unknown field to be refused")
+check("get-unknown-field-message", "is not a field of default.json" in unknown_get.stderr, unknown_get.stderr.strip())
+
+missing_get = run_get("source.path", job="ghost")
+check("get-missing-job", missing_get.returncode != 0, "expected a missing job file to be refused")
+check("get-missing-job-message", "does not exist" in missing_get.stderr, missing_get.stderr.strip())
+
+# Reading must work on a file too broken to validate; that is when it is needed.
+broken = copy.deepcopy(JOB)
+broken["copy"]["scheduleUtc"] = "0 99 * * *"
+broken_get = run_get("copy.scheduleUtc", jobs={"default.json": broken})
+check("get-reads-invalid-file", broken_get.returncode == 0, broken_get.stderr.strip())
+check("get-reads-invalid-value", broken_get.stdout.strip() == "0 99 * * *", broken_get.stdout.strip())
+
 # --- the environment mapping round-trips ------------------------------------
 env_result = subprocess.run(
     [sys.executable, str(COPYCTL), "env", "default"],

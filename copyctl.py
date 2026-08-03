@@ -1003,27 +1003,71 @@ def setting_value(current, value, label):
     return value
 
 
+def setting_text(value):
+    """Render a field as the exact text 'set' would accept back.
+
+    Round-tripping matters: 'copyctl.py set JOB FIELD "$(copyctl.py get JOB
+    FIELD)"' has to be a no-op, and a shell script reading one value should not
+    have to strip JSON quoting off a plain string.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return str(value)
+    return json.dumps(value)
+
+
+def job_file(name):
+    path = JOBS_DIR / f"{name}.json"
+    if not path.exists():
+        fail(f"{path} does not exist. Run 'copyctl.py pull' to write local files from Azure.")
+    return path
+
+
+def job_field(document, field, path):
+    """Resolve SECTION.FIELD against a job document, or explain what exists."""
+    section, _, name = field.partition(".")
+    if section not in SETTABLE_SECTIONS or not isinstance(document.get(section), dict):
+        fail(
+            f"'{field}' is not a settable field. Use SECTION.FIELD, where SECTION is "
+            f"{', '.join(SETTABLE_SECTIONS)}. The job name is fixed by the filename."
+        )
+    if name not in document[section]:
+        fail(
+            f"'{field}' is not a field of {path.name}. "
+            f"The {section} fields are: {', '.join(sorted(document[section]))}."
+        )
+    return section, name
+
+
+def cmd_get(args):
+    """Print one field of jobs/JOB.json, or every settable field.
+
+    Deliberately does not validate first: an operator inspecting a job file is
+    most likely to be doing it because something about it is wrong.
+    """
+    path = job_file(args.job)
+    document = read_json(path, str(path))
+    if args.field:
+        section, name = job_field(document, args.field, path)
+        print(setting_text(document[section][name]))
+        return
+    for section in SETTABLE_SECTIONS:
+        for name, value in document.get(section, {}).items():
+            print(f"{section + '.' + name:<28} {setting_text(value)}")
+
+
 def cmd_set(args):
     """Change one field in jobs/JOB.json without hand-editing the file.
 
     The new file is validated exactly as 'validate' would before it reaches
     disk, so a rejected value leaves the previous configuration intact.
     """
-    path = JOBS_DIR / f"{args.job}.json"
-    if not path.exists():
-        fail(f"{path} does not exist. Run 'copyctl.py pull' to write local files from Azure.")
+    path = job_file(args.job)
     document = read_json(path, str(path))
-    section, _, field = args.field.partition(".")
-    if section not in SETTABLE_SECTIONS or not isinstance(document.get(section), dict):
-        fail(
-            f"'{args.field}' is not a settable field. Use SECTION.FIELD, where SECTION is "
-            f"{', '.join(SETTABLE_SECTIONS)}. The job name is fixed by the filename."
-        )
-    if field not in document[section]:
-        fail(
-            f"'{args.field}' is not a field of {path.name}. "
-            f"The {section} fields are: {', '.join(sorted(document[section]))}."
-        )
+    section, field = job_field(document, args.field, path)
 
     previous = document[section][field]
     document[section][field] = setting_value(previous, args.value, args.field)
@@ -1337,6 +1381,13 @@ def build_parser():
         help="Seconds to wait for the preview execution's results. Default 900.",
     )
     add("set-secret", cmd_set_secret, "Store or rotate one job's Entra client secret.", needs_job=True)
+    get_field = add("get", cmd_get, "Print one field of jobs/JOB.json, or every settable field.", needs_job=True)
+    get_field.add_argument(
+        "field",
+        nargs="?",
+        help="Field to print, as SECTION.FIELD. Omit it to list every settable field and its value.",
+    )
+
     set_field = add("set", cmd_set, "Change one field in jobs/JOB.json.", needs_job=True)
     set_field.add_argument("field", help="Field to change, as SECTION.FIELD: for example copy.scheduleUtc.")
     set_field.add_argument(
