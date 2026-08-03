@@ -17,6 +17,17 @@ failures=0
 fake_rclone="$test_root/rclone"
 cat >"$fake_rclone" <<'SCRIPT'
 #!/bin/sh
+case "${1:-}" in
+  version)
+    printf 'rclone v9.99.9\n'
+    exit 0
+    ;;
+  lsf)
+    # The destination emptiness probe. Non-empty unless the test says otherwise.
+    [ "${FAKE_LSF_EMPTY:-false}" = "true" ] || printf 'existing-item/\n'
+    exit 0
+    ;;
+esac
 printf 'SOURCE_TYPE_CONFIG=%s\n' "${RCLONE_CONFIG_SOURCE_TYPE:-}"
 printf 'SOURCE_ENV_AUTH=%s\n' "${RCLONE_CONFIG_SOURCE_ENV_AUTH:-}"
 printf 'SOURCE_SHARE_NAME=%s\n' "${RCLONE_CONFIG_SOURCE_SHARE_NAME:-}"
@@ -73,7 +84,7 @@ base_env() {
   export JQ_BIN="${JQ_BIN:-jq}"
   export AZURE_MANAGED_IDENTITY_CLIENT_ID=00000000-0000-0000-0000-000000000003
   export RCLONE_CONFIG_DESTINATION_CLIENT_SECRET='test-only-secret~with+special/chars='
-  unset FAKE_RCLONE_EXIT_CODE FAKE_TOKEN_FAIL FAKE_DRIVE_ID FAKE_LIBRARY_NAME || true
+  unset FAKE_RCLONE_EXIT_CODE FAKE_TOKEN_FAIL FAKE_DRIVE_ID FAKE_LIBRARY_NAME FAKE_LSF_EMPTY || true
 }
 
 report() {
@@ -109,6 +120,14 @@ run_transfer() {
   # or every such file is re-uploaded on every run.
   assert_contains "default" "$output" "--ignore-size"
   assert_contains "default" "$output" "--ignore-checksum"
+  assert_contains "default" "$output" "--user-agent"
+  assert_contains "default" "$output" "ISV|rclone.org|rclone/v9.99.9"
+  # timeoutMinutes 360 minus the 15-minute margin.
+  assert_contains "default" "$output" "--max-duration"
+  assert_contains "default" "$output" "345m"
+  assert_contains "default" "$output" "--cutoff-mode"
+  # The probe saw a populated destination, so the comparing path must run.
+  assert_missing "default" "$output" "--no-check-dest"
   assert_contains "default" "$output" "dry_run=true"
   assert_missing "default" "$output" "sync"
   [ "$failures" -eq 0 ] || exit 1
@@ -163,6 +182,52 @@ run_transfer() {
   export SOURCE_MODIFIED_ON_OR_AFTER=2026-07-01
   output="$(run_transfer)" || report "max-age" "exited non-zero"
   assert_contains "max-age" "$output" "--max-age"
+  # The fixed cutoff can select most of the tree, where --no-traverse is a
+  # net loss. Only the rolling top-up window may add it.
+  assert_missing "max-age" "$output" "--no-traverse"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+# --- a rolling top-up window adds --max-age and skips the destination walk --
+(
+  base_env
+  export SOURCE_TOP_UP_MAX_AGE=48h
+  output="$(run_transfer)" || report "top-up" "exited non-zero"
+  assert_contains "top-up" "$output" "--max-age"
+  assert_contains "top-up" "$output" "48h"
+  assert_contains "top-up" "$output" "--no-traverse"
+  assert_contains "top-up" "$output" "selection=top_up"
+  assert_missing "top-up" "$output" "--no-check-dest"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+# --- a provably empty destination skips per-file checking -------------------
+(
+  base_env
+  export FAKE_LSF_EMPTY=true
+  output="$(run_transfer)" || report "empty-destination" "exited non-zero"
+  assert_contains "empty-destination" "$output" "--no-check-dest"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+# --- the timeout window closes with work remaining: not a failure -----------
+(
+  base_env
+  export FAKE_RCLONE_EXIT_CODE=10
+  output="$(run_transfer)" || report "window-exhausted" "exited non-zero"
+  assert_contains "window-exhausted" "$output" "transfer_window_exhausted"
+  assert_contains "window-exhausted" "$output" "exit_code=0"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+# --- exit 10 without a configured timeout stays a failure -------------------
+(
+  base_env
+  export COPY_TIMEOUT_MINUTES=""
+  export FAKE_RCLONE_EXIT_CODE=10
+  output="$(run_transfer)" && report "exit-10-unconfigured" "expected a non-zero exit"
+  printf '%s\n' "$output" | grep -F 'exit_code=10' >/dev/null ||
+    report "exit-10-unconfigured" "expected the completion record to carry exit_code=10"
   [ "$failures" -eq 0 ] || exit 1
 ) || failures=$((failures + 1))
 
@@ -189,6 +254,29 @@ expect_rejection() {
   export SOURCE_INCLUDE_PATHS='["a"]'
   export SOURCE_MODIFIED_ON_OR_AFTER=2026-07-01
   expect_rejection "combination" "cannot_be_combined"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+(
+  base_env
+  export SOURCE_TOP_UP_MAX_AGE=48x
+  expect_rejection "top-up-format" "SOURCE_TOP_UP_MAX_AGE_must_be_minutes_hours_or_days"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+(
+  base_env
+  export SOURCE_TOP_UP_MAX_AGE=48h
+  export SOURCE_MODIFIED_ON_OR_AFTER=2026-07-01
+  expect_rejection "top-up-with-cutoff" "cannot_be_combined"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+(
+  base_env
+  export SOURCE_TOP_UP_MAX_AGE=48h
+  export SOURCE_INCLUDE_PATHS='["a"]'
+  expect_rejection "top-up-with-manifest" "cannot_be_combined"
   [ "$failures" -eq 0 ] || exit 1
 ) || failures=$((failures + 1))
 

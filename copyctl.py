@@ -33,6 +33,8 @@ PARKED_CRON = "0 0 31 2 *"
 UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 NAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 STORAGE_ACCOUNT_PATTERN = re.compile(r"^[a-z0-9]{3,24}$")
+# An rclone --max-age duration: one whole number with a single unit suffix.
+TOP_UP_MAX_AGE_PATTERN = re.compile(r"^[0-9]{1,6}[mhd]$")
 
 # Fields the deployment template turns into container environment variables.
 # This mapping is the single definition of the runtime contract; app/transfer.sh
@@ -45,6 +47,7 @@ ENV_FIELDS = (
     ("SOURCE_CONTAINER_OR_SHARE", ("source", "containerOrShare")),
     ("SOURCE_PATH", ("source", "path")),
     ("SOURCE_MODIFIED_ON_OR_AFTER", ("source", "modifiedOnOrAfter")),
+    ("SOURCE_TOP_UP_MAX_AGE", ("source", "topUpMaxAge")),
     ("DEST_TENANT_ID", ("destination", "tenantId")),
     ("DEST_CLIENT_ID", ("destination", "clientId")),
     ("DEST_SITE_URL", ("destination", "siteUrl")),
@@ -253,6 +256,7 @@ def load_job(path):
             "path",
             "includePaths",
             "modifiedOnOrAfter",
+            "topUpMaxAge",
         ],
         f"{label}.source",
     )
@@ -288,6 +292,20 @@ def load_job(path):
     if include_paths and modified:
         # --files-from-raw overrides every other rclone filter.
         fail(f"{label}.source.includePaths and modifiedOnOrAfter cannot be used together.")
+
+    top_up = text(source["topUpMaxAge"], f"{label}.source.topUpMaxAge", allow_empty=True)
+    if top_up:
+        if not TOP_UP_MAX_AGE_PATTERN.fullmatch(top_up) or int(top_up[:-1]) < 1:
+            fail(
+                f"{label}.source.topUpMaxAge must be a whole number of minutes, hours, or days, "
+                "like 90m, 48h, or 2d."
+            )
+        if include_paths:
+            fail(f"{label}.source.includePaths and topUpMaxAge cannot be used together.")
+        if modified:
+            # A rolling window and a fixed cutoff are both --max-age filters;
+            # one job cannot carry two.
+            fail(f"{label}.source.modifiedOnOrAfter and topUpMaxAge cannot be used together.")
 
     site_url = text(destination["siteUrl"], f"{label}.destination.siteUrl").rstrip("/")
     parsed_site = urllib.parse.urlsplit(site_url)
@@ -325,6 +343,7 @@ def load_job(path):
             "path": relative_path(source["path"], f"{label}.source.path"),
             "includePaths": include_paths,
             "modifiedOnOrAfter": modified,
+            "topUpMaxAge": top_up,
         },
         "destination": {
             "tenantId": uuid_text(destination["tenantId"], f"{label}.destination.tenantId"),
@@ -672,12 +691,25 @@ def config_to_env(job):
         values[env_name] = str(job[section][field])
     values["SOURCE_INCLUDE_PATHS"] = json.dumps(job["source"]["includePaths"], separators=(",", ":"))
     values["COPY_DRY_RUN"] = "true" if job["copy"]["dryRun"] else "false"
+    # The runtime cannot see replicaTimeout, so the timeout travels as an
+    # environment variable too. apply sets both from the same field, which is
+    # what keeps the container's --max-duration margin aligned with the real
+    # kill time.
+    values["COPY_TIMEOUT_MINUTES"] = str(job["copy"]["timeoutMinutes"])
     return values
+
+
+# Variables added after the first release. A deployed job from an older
+# template legitimately lacks them, and pull must keep working there; apply
+# backfills them from the job file.
+OPTIONAL_ENV_NAMES = {"SOURCE_TOP_UP_MAX_AGE"}
 
 
 def env_to_config(record):
     env = record["env"]
-    missing = [name for name, _ in ENV_FIELDS if name not in env]
+    missing = [
+        name for name, _ in ENV_FIELDS if name not in env and name not in OPTIONAL_ENV_NAMES
+    ]
     if missing:
         fail(
             f"Deployed job '{record['name']}' is missing environment variable(s): {', '.join(missing)}. "
@@ -698,6 +730,7 @@ def env_to_config(record):
             "path": env.get("SOURCE_PATH", ""),
             "includePaths": include_paths,
             "modifiedOnOrAfter": env.get("SOURCE_MODIFIED_ON_OR_AFTER", ""),
+            "topUpMaxAge": env.get("SOURCE_TOP_UP_MAX_AGE", ""),
         },
         "destination": {
             "tenantId": env["DEST_TENANT_ID"],

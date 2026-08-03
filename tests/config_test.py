@@ -102,6 +102,21 @@ duplicate = copy.deepcopy(JOB)
 duplicate["source"]["includePaths"] = ["a", "a"]
 expect_failure("duplicate-include", {"default.json": duplicate}, "duplicate path")
 
+# --- the rolling top-up window ----------------------------------------------
+expect_success("top-up-window", with_job(source__topUpMaxAge="48h"))
+expect_failure("top-up-bad-unit", with_job(source__topUpMaxAge="2w"), "minutes, hours, or days")
+expect_failure("top-up-zero", with_job(source__topUpMaxAge="0h"), "minutes, hours, or days")
+
+top_up_and_cutoff = copy.deepcopy(JOB)
+top_up_and_cutoff["source"]["topUpMaxAge"] = "48h"
+top_up_and_cutoff["source"]["modifiedOnOrAfter"] = "2026-07-01"
+expect_failure("top-up-with-cutoff", {"default.json": top_up_and_cutoff}, "cannot be used together")
+
+top_up_and_includes = copy.deepcopy(JOB)
+top_up_and_includes["source"]["topUpMaxAge"] = "48h"
+top_up_and_includes["source"]["includePaths"] = ["Invoices/2026"]
+expect_failure("top-up-with-includes", {"default.json": top_up_and_includes}, "cannot be used together")
+
 # --- cron validation --------------------------------------------------------
 expect_failure("cron-too-few-fields", with_job(copy__scheduleUtc="0 2 * *"), "exactly five")
 expect_failure("cron-minute-range", with_job(copy__scheduleUtc="70 2 * * *"), "minute value out of range")
@@ -159,6 +174,16 @@ check(
     env_map.get("SOURCE_SUBSCRIPTION_ID") == JOB["source"]["subscriptionId"]
     and env_map.get("SOURCE_RESOURCE_GROUP") == JOB["source"]["resourceGroup"],
     "copyctl.py pull needs these to rebuild a job file",
+)
+check(
+    "env-carries-timeout",
+    env_map.get("COPY_TIMEOUT_MINUTES") == str(JOB["copy"]["timeoutMinutes"]),
+    "transfer.sh derives --max-duration from this",
+)
+check(
+    "env-carries-top-up-window",
+    env_map.get("SOURCE_TOP_UP_MAX_AGE") == "",
+    "the top-up window must reach the container even when empty",
 )
 
 # --- apply must not drop variables the deployment template owns -------------

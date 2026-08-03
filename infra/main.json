@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.45.15.27210",
-      "templateHash": "3029749659695361185"
+      "version": "0.46.1.21595",
+      "templateHash": "11790703311328068286"
     }
   },
   "parameters": {
@@ -308,6 +308,10 @@
                   "value": "[parameters('jobs')[copyIndex()].source.modifiedOnOrAfter]"
                 },
                 {
+                  "name": "SOURCE_TOP_UP_MAX_AGE",
+                  "value": "[coalesce(tryGet(parameters('jobs')[copyIndex()].source, 'topUpMaxAge'), '')]"
+                },
+                {
                   "name": "DEST_TENANT_ID",
                   "value": "[parameters('jobs')[copyIndex()].destination.tenantId]"
                 },
@@ -338,6 +342,10 @@
                 {
                   "name": "COPY_SCHEDULE_UTC",
                   "value": "[parameters('jobs')[copyIndex()].copy.scheduleUtc]"
+                },
+                {
+                  "name": "COPY_TIMEOUT_MINUTES",
+                  "value": "[string(parameters('jobs')[copyIndex()].copy.timeoutMinutes)]"
                 },
                 {
                   "name": "AZURE_MANAGED_IDENTITY_CLIENT_ID",
@@ -411,8 +419,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.45.15.27210",
-              "templateHash": "12063167822437718833"
+              "version": "0.46.1.21595",
+              "templateHash": "15261199759732654465"
             }
           },
           "parameters": {
@@ -496,8 +504,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.45.15.27210",
-              "templateHash": "1372097203115090456"
+              "version": "0.46.1.21595",
+              "templateHash": "18441293462810144651"
             }
           },
           "parameters": {
