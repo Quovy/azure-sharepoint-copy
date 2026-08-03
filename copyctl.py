@@ -1006,9 +1006,9 @@ def setting_value(current, value, label):
 def setting_text(value):
     """Render a field as the exact text 'set' would accept back.
 
-    Round-tripping matters: 'copyctl.py set JOB FIELD "$(copyctl.py get JOB
-    FIELD)"' has to be a no-op, and a shell script reading one value should not
-    have to strip JSON quoting off a plain string.
+    Round-tripping matters: 'copyctl.py set-config JOB FIELD "$(copyctl.py
+    get-config JOB FIELD)"' has to be a no-op, and a shell script reading one
+    value should not have to strip JSON quoting off a plain string.
     """
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -1042,7 +1042,7 @@ def job_field(document, field, path):
     return section, name
 
 
-def cmd_get(args):
+def cmd_get_config(args):
     """Print one field of jobs/JOB.json, or every settable field.
 
     Deliberately does not validate first: an operator inspecting a job file is
@@ -1059,7 +1059,7 @@ def cmd_get(args):
             print(f"{section + '.' + name:<28} {setting_text(value)}")
 
 
-def cmd_set(args):
+def cmd_set_config(args):
     """Change one field in jobs/JOB.json without hand-editing the file.
 
     The new file is validated exactly as 'validate' would before it reaches
@@ -1381,16 +1381,21 @@ def build_parser():
         help="Seconds to wait for the preview execution's results. Default 900.",
     )
     add("set-secret", cmd_set_secret, "Store or rotate one job's Entra client secret.", needs_job=True)
-    get_field = add("get", cmd_get, "Print one field of jobs/JOB.json, or every settable field.", needs_job=True)
-    get_field.add_argument(
+    get_config = add(
+        "get-config",
+        cmd_get_config,
+        "Print one field of jobs/JOB.json, or every settable field.",
+        needs_job=True,
+    )
+    get_config.add_argument(
         "field",
         nargs="?",
         help="Field to print, as SECTION.FIELD. Omit it to list every settable field and its value.",
     )
 
-    set_field = add("set", cmd_set, "Change one field in jobs/JOB.json.", needs_job=True)
-    set_field.add_argument("field", help="Field to change, as SECTION.FIELD: for example copy.scheduleUtc.")
-    set_field.add_argument(
+    set_config = add("set-config", cmd_set_config, "Change one field in jobs/JOB.json.", needs_job=True)
+    set_config.add_argument("field", help="Field to change, as SECTION.FIELD: for example copy.scheduleUtc.")
+    set_config.add_argument(
         "value",
         help="New value. Booleans are true or false, numbers are plain digits, lists are JSON arrays.",
     )

@@ -136,9 +136,9 @@ expect_failure(
     "two different SharePoint sites",
 )
 
-# --- set: change one field in a job file ------------------------------------
+# --- set-config: change one field in a job file -----------------------------
 def run_set(field, value, jobs=None, job="default"):
-    """Run 'set' against a throwaway jobs directory.
+    """Run 'set-config' against a throwaway jobs directory.
 
     Returns the completed process and the job file as it was left behind, so a
     rejected edit can be checked for having changed nothing.
@@ -149,7 +149,7 @@ def run_set(field, value, jobs=None, job="default"):
         for filename, config in (jobs or {"default.json": copy.deepcopy(JOB)}).items():
             (jobs_path / filename).write_text(json.dumps(config, indent=2) + "\n")
         result = subprocess.run(
-            [sys.executable, str(COPYCTL), "set", job, field, value],
+            [sys.executable, str(COPYCTL), "set-config", job, field, value],
             env={**os.environ, "COPY_JOBS_DIR": str(jobs_path)},
             text=True,
             capture_output=True,
@@ -212,7 +212,7 @@ check("set-missing-job", missing_result.returncode != 0, "expected a missing job
 check("set-missing-job-message", "does not exist" in missing_result.stderr, missing_result.stderr.strip())
 
 
-# --- get: read one field, or list them all ----------------------------------
+# --- get-config: read one field, or list them all ---------------------------
 def run_get(*arguments, jobs=None, job="default"):
     with tempfile.TemporaryDirectory() as directory:
         jobs_path = Path(directory) / "jobs"
@@ -220,7 +220,7 @@ def run_get(*arguments, jobs=None, job="default"):
         for filename, config in (jobs or {"default.json": copy.deepcopy(JOB)}).items():
             (jobs_path / filename).write_text(json.dumps(config, indent=2) + "\n")
         return subprocess.run(
-            [sys.executable, str(COPYCTL), "get", job, *arguments],
+            [sys.executable, str(COPYCTL), "get-config", job, *arguments],
             env={**os.environ, "COPY_JOBS_DIR": str(jobs_path)},
             text=True,
             capture_output=True,
@@ -256,8 +256,8 @@ check(
 )
 check("get-listing-omits-name", "name" not in listed_fields, "the job name is fixed by the filename")
 
-# What 'get' prints, 'set' must accept back unchanged. This is the property that
-# lets an operator copy a value out, edit it, and put it back.
+# What 'get-config' prints, 'set-config' must accept back unchanged. This is the
+# property that lets an operator copy a value out, edit it, and put it back.
 for round_trip_field in ("destination.library", "copy.scheduleUtc", "copy.dryRun", "copy.timeoutMinutes"):
     section, _, name = round_trip_field.partition(".")
     printed = run_get(round_trip_field).stdout.rstrip("\n")
