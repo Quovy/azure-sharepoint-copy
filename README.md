@@ -82,8 +82,33 @@ guarantee. See [SECURITY.md](SECURITY.md).
 schedule, and timeout all change without redeploying the template or the image.
 Applying a configuration never starts a parked schedule.
 
-Redeploy the template only when adding or removing a job, or when changing a
-source storage account.
+Redeploy the whole template only when removing a job or changing a source
+storage account.
+
+## Adding a job later
+
+Write `jobs/<name>.json`, then:
+
+```bash
+./copyctl.py validate
+./copyctl.py deploy <name>
+```
+
+`deploy` creates that one job and nothing else. It reads the resource group,
+`baseName`, network prefixes, image, and registry back from what is already
+deployed, so the shared network, environment, and vault are re-declared exactly
+as they stand and no existing job is touched: no schedule is parked and no Key
+Vault secret returns to its placeholder. It shows `az deployment group what-if`
+output and waits for a typed confirmation before deploying. Read that output —
+anything marked Modify or Delete on an existing job is a stop.
+
+Re-rendering every `jobs/*.json` with `params` and redeploying would do the
+opposite: the template owns each job's schedule and placeholder secret, so a
+full redeploy parks every schedule and overwrites every stored credential.
+
+The new job arrives in dry-run mode with its schedule parked, the same as a
+fresh install, so finish with `set-secret`, `start`, `go-live`, and `enable` as
+above. `deploy` will not touch a job that already exists — use `apply` for that.
 
 ## What gets created
 
