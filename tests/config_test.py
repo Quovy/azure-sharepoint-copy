@@ -75,6 +75,7 @@ check(
 expect_success("baseline", with_job())
 
 expect_failure("quoted-boolean", with_job(copy__dryRun="true"), "must be true or false, without quotes")
+expect_failure("bad-empty-folders", with_job(copy__emptyFolders="yes"), "must be auto, always, or never")
 expect_failure("traversal", with_job(source__path="../outside"), "must not contain '..'")
 expect_failure("absolute-path", with_job(source__path="/etc"), "must be relative")
 expect_failure("bad-date", with_job(source__modifiedOnOrAfter="2026-13-40"), "must be YYYY-MM-DD")

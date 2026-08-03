@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.45.15.27210",
-      "templateHash": "3029749659695361185"
+      "version": "0.46.1.21595",
+      "templateHash": "10750425233701508037"
     }
   },
   "parameters": {
@@ -332,6 +332,10 @@
                   "value": "[parameters('jobs')[copyIndex()].copy.existingFiles]"
                 },
                 {
+                  "name": "COPY_EMPTY_FOLDERS",
+                  "value": "[parameters('jobs')[copyIndex()].copy.emptyFolders]"
+                },
+                {
                   "name": "COPY_DRY_RUN",
                   "value": "[if(parameters('jobs')[copyIndex()].copy.dryRun, 'true', 'false')]"
                 },
@@ -411,8 +415,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.45.15.27210",
-              "templateHash": "12063167822437718833"
+              "version": "0.46.1.21595",
+              "templateHash": "15261199759732654465"
             }
           },
           "parameters": {
@@ -496,8 +500,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.45.15.27210",
-              "templateHash": "1372097203115090456"
+              "version": "0.46.1.21595",
+              "templateHash": "18441293462810144651"
             }
           },
           "parameters": {

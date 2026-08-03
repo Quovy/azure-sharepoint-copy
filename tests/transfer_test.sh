@@ -170,6 +170,24 @@ run_transfer() {
   [ "$failures" -eq 0 ] || exit 1
 ) || failures=$((failures + 1))
 
+# --- emptyFolders overrides the automatic behaviour in both directions ------
+(
+  base_env
+  export SOURCE_MODIFIED_ON_OR_AFTER=2026-07-01
+  export COPY_EMPTY_FOLDERS=always
+  output="$(run_transfer)" || report "empty-folders-always" "exited non-zero"
+  assert_contains "empty-folders-always" "$output" "--create-empty-src-dirs"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+(
+  base_env
+  export COPY_EMPTY_FOLDERS=never
+  output="$(run_transfer)" || report "empty-folders-never" "exited non-zero"
+  assert_missing "empty-folders-never" "$output" "--create-empty-src-dirs"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
 # --- rejected configurations ------------------------------------------------
 expect_rejection() {
   label="$1"
@@ -200,6 +218,13 @@ expect_rejection() {
   base_env
   export COPY_DRY_RUN=True
   expect_rejection "boolean-case" "COPY_DRY_RUN_must_be_true_or_false"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+(
+  base_env
+  export COPY_EMPTY_FOLDERS=sometimes
+  expect_rejection "bad-empty-folders" "unsupported_COPY_EMPTY_FOLDERS"
   [ "$failures" -eq 0 ] || exit 1
 ) || failures=$((failures + 1))
 

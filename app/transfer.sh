@@ -84,6 +84,9 @@ SOURCE_PATH="${SOURCE_PATH:-}"
 DEST_PATH="${DEST_PATH:-}"
 SOURCE_INCLUDE_PATHS="${SOURCE_INCLUDE_PATHS:-[]}"
 SOURCE_MODIFIED_ON_OR_AFTER="${SOURCE_MODIFIED_ON_OR_AFTER:-}"
+# Defaulted rather than required so jobs deployed before the field existed
+# keep running on a new image without a configuration update.
+COPY_EMPTY_FOLDERS="${COPY_EMPTY_FOLDERS:-auto}"
 
 case "$SOURCE_TYPE" in
   azure_files | adls_gen2) ;;
@@ -97,6 +100,10 @@ esac
 case "$COPY_DRY_RUN" in
   true | false) ;;
   *) fail "COPY_DRY_RUN_must_be_true_or_false" ;;
+esac
+case "$COPY_EMPTY_FOLDERS" in
+  auto | always | never) ;;
+  *) fail "unsupported_COPY_EMPTY_FOLDERS" ;;
 esac
 case "$SOURCE_STORAGE_ACCOUNT" in
   *[!a-z0-9]* | "") fail "invalid_SOURCE_STORAGE_ACCOUNT" ;;
@@ -304,14 +311,17 @@ if [ "$COPY_MODE" = "new_only" ]; then
   set -- "$@" --ignore-existing
 fi
 if [ -n "$SOURCE_MODIFIED_ON_OR_AFTER" ]; then
-  # --max-age filters files, not directories, so with --create-empty-src-dirs
-  # every directory the walk visits would be recreated empty at the destination
-  # even when nothing in it matches the cutoff. Mirror the folder structure
-  # only when no date filter is narrowing the copy.
   set -- "$@" --max-age "$SOURCE_MODIFIED_ON_OR_AFTER"
-else
-  set -- "$@" --create-empty-src-dirs
 fi
+# --max-age filters files, not directories, so with --create-empty-src-dirs
+# every directory the walk visits would be recreated empty at the destination
+# even when nothing in it matches the cutoff. "auto" therefore mirrors the
+# folder structure only when no date filter is narrowing the copy; "always"
+# and "never" let a job state the choice outright.
+case "$COPY_EMPTY_FOLDERS" in
+  always) set -- "$@" --create-empty-src-dirs ;;
+  auto) [ -n "$SOURCE_MODIFIED_ON_OR_AFTER" ] || set -- "$@" --create-empty-src-dirs ;;
+esac
 if [ "$COPY_DRY_RUN" = "true" ]; then
   set -- "$@" --dry-run
 fi
