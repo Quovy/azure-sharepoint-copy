@@ -272,7 +272,6 @@ destination_remote="destination:"
 # re-uploaded on every run. The trade-off is that a successful copy is not a
 # byte-for-byte attestation; comparison falls back to modification time.
 set -- copy "$source_remote" "$destination_remote" \
-  --create-empty-src-dirs \
   --checkers "${RCLONE_CHECKERS:-8}" \
   --transfers "${RCLONE_TRANSFERS:-4}" \
   --contimeout 30s \
@@ -305,7 +304,13 @@ if [ "$COPY_MODE" = "new_only" ]; then
   set -- "$@" --ignore-existing
 fi
 if [ -n "$SOURCE_MODIFIED_ON_OR_AFTER" ]; then
+  # --max-age filters files, not directories, so with --create-empty-src-dirs
+  # every directory the walk visits would be recreated empty at the destination
+  # even when nothing in it matches the cutoff. Mirror the folder structure
+  # only when no date filter is narrowing the copy.
   set -- "$@" --max-age "$SOURCE_MODIFIED_ON_OR_AFTER"
+else
+  set -- "$@" --create-empty-src-dirs
 fi
 if [ "$COPY_DRY_RUN" = "true" ]; then
   set -- "$@" --dry-run
