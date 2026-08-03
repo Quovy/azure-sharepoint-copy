@@ -646,7 +646,7 @@ def deployed_job(subscription, name, resource_group=None):
     return jobs[name]
 
 
-def deployment_settings(subscription, deployed):
+def deployment_settings(subscription, deployed, registry_id=""):
     """Read one deployment's shared template parameters back out of Azure.
 
     Adding a job re-declares the network, the environment, and the vault beside
@@ -701,7 +701,10 @@ def deployment_settings(subscription, deployed):
         "vnet": vnet,
         "subnet": subnet,
         "image": images.pop() if len(images) == 1 else "",
-        "registryId": registry_id_for(subscription, reference),
+        # An operator who supplies the registry is not asked to prove it exists
+        # here: the lookup only searches this subscription, and a registry in
+        # another one is exactly the case --registry-id is for.
+        "registryId": registry_id or registry_id_for(subscription, reference),
     }
 
 
@@ -1108,7 +1111,7 @@ def cmd_deploy(args):
             f"Job '{args.job}' is already deployed. "
             f"Use 'copyctl.py apply {args.job}' to publish configuration changes to it."
         )
-    settings = deployment_settings(args.subscription, deployed)
+    settings = deployment_settings(args.subscription, deployed, args.registry_id or "")
     image = args.image or settings["image"]
     if not image:
         fail(
@@ -1121,7 +1124,7 @@ def cmd_deploy(args):
         settings["vnet"],
         settings["subnet"],
         image,
-        args.registry_id or settings["registryId"],
+        settings["registryId"],
         settings["location"],
     )
     print(
@@ -1150,7 +1153,7 @@ def cmd_deploy(args):
             "--mode", "Incremental",
             "--only-show-errors",
         )
-        print("\nPreviewing the change (az deployment group what-if):\n")
+        print("\nPreviewing the change (az deployment group what-if). This takes a minute.\n")
         print(run("az", "deployment", "group", "what-if", *common))
         print(
             "\nOnly resources for this job should be marked Create, plus role assignments "
@@ -1158,6 +1161,7 @@ def cmd_deploy(args):
         )
         confirm(f"ADD {args.job}", f"\nType 'ADD {args.job}' to deploy: ")
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+        print("\nDeploying. Creating the job and its identity takes a few minutes.")
         run(
             "az", "deployment", "group", "create",
             "--name", f"add-{args.job}-{stamp}",

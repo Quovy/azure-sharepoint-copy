@@ -259,6 +259,37 @@ check(
     "guessing which deployment to extend could add a job to the wrong one",
 )
 
+mixed_images = {
+    **DEPLOYED,
+    "reports": {
+        **DEPLOYED["invoices"],
+        "name": "reports",
+        "resourceName": "file-copy-reports",
+        "image": "example.invalid/copy@sha256:" + "b" * 64,
+    },
+}
+check(
+    "deploy-refuses-to-guess-image",
+    copyctl.deployment_settings(None, mixed_images)["image"] == "",
+    "with no agreed image, deploy must ask rather than pick one for the new job",
+)
+
+
+def refuse_az_json(*args):
+    if args[:3] == ("containerapp", "job", "show"):
+        raise AssertionError("a supplied --registry-id must not be re-looked-up")
+    return fake_az_json(*args)
+
+
+copyctl.az_json = refuse_az_json
+supplied = "/subscriptions/other/resourceGroups/rg/providers/Microsoft.ContainerRegistry/registries/acr"
+check(
+    "deploy-honours-supplied-registry",
+    copyctl.deployment_settings(None, DEPLOYED, supplied)["registryId"] == supplied,
+    "the lookup only searches one subscription, so --registry-id must bypass it",
+)
+copyctl.az_json = fake_az_json
+
 document = copyctl.params_document(
     [copy.deepcopy(JOB)], "file-copy", "10.240.0.0/16", "10.240.0.0/27", "example.invalid/copy@sha256:x", "", "eastus"
 )

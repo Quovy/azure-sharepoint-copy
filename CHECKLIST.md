@@ -168,7 +168,7 @@ reason rather than copying anything.
 - Add a job: write `jobs/<name>.json`, then `./copyctl.py validate` and
   `./copyctl.py deploy <name>`. It creates that job alone and leaves every
   deployed job, schedule, and stored credential as it is. The new job arrives in
-  dry-run mode with its schedule parked, so repeat steps 3 to 6 for it. Do not
+  dry-run mode with its schedule parked, so repeat steps 3 to 5 for it. Do not
   redeploy the whole template to add a job: that parks every schedule and
   returns every Key Vault secret to its placeholder.
 - Remove a job, or change a source storage account: redeploy the template.
