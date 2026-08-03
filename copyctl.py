@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -973,6 +974,70 @@ def cmd_preview(args):
     print("\nNothing was uploaded. This job is still in dry-run mode.")
 
 
+SETTABLE_SECTIONS = ("source", "destination", "copy")
+
+
+def setting_value(current, value, label):
+    """Read a command-line value as the type the field already holds.
+
+    The existing value is the only type declaration a job file carries, so
+    matching it keeps 'set' from turning a boolean into the string "true" - the
+    exact mistake validation already refuses in hand-edited files.
+    """
+    if isinstance(current, bool):
+        if value not in ("true", "false"):
+            fail(f"{label} must be true or false, without quotes.")
+        return value == "true"
+    if isinstance(current, int):
+        if not re.fullmatch(r"-?\d+", value):
+            fail(f"{label} must be a whole number.")
+        return int(value)
+    if isinstance(current, list):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = None
+        if not isinstance(parsed, list):
+            fail(f"{label} must be a JSON array, for example '[\"reports\",\"exports/2026\"]'.")
+        return parsed
+    return value
+
+
+def cmd_set(args):
+    """Change one field in jobs/JOB.json without hand-editing the file.
+
+    The new file is validated exactly as 'validate' would before it reaches
+    disk, so a rejected value leaves the previous configuration intact.
+    """
+    path = JOBS_DIR / f"{args.job}.json"
+    if not path.exists():
+        fail(f"{path} does not exist. Run 'copyctl.py pull' to write local files from Azure.")
+    document = read_json(path, str(path))
+    section, _, field = args.field.partition(".")
+    if section not in SETTABLE_SECTIONS or not isinstance(document.get(section), dict):
+        fail(
+            f"'{args.field}' is not a settable field. Use SECTION.FIELD, where SECTION is "
+            f"{', '.join(SETTABLE_SECTIONS)}. The job name is fixed by the filename."
+        )
+    if field not in document[section]:
+        fail(
+            f"'{args.field}' is not a field of {path.name}. "
+            f"The {section} fields are: {', '.join(sorted(document[section]))}."
+        )
+
+    previous = document[section][field]
+    document[section][field] = setting_value(previous, args.value, args.field)
+    rendered = json.dumps(document, indent=2) + "\n"
+    with tempfile.TemporaryDirectory() as directory:
+        candidate = Path(directory) / path.name
+        candidate.write_text(rendered, encoding="utf-8")
+        load_job(candidate)
+
+    path.write_text(rendered, encoding="utf-8")
+    print(f"[{args.job}] {args.field}: {json.dumps(previous)} -> {json.dumps(document[section][field])}")
+    print(f"Wrote {path}. Publish it to Azure with 'copyctl.py apply {args.job}'.")
+
+
 def cmd_apply(args):
     job = load_job_named(args.job)
     record = deployed_job(args.subscription, args.job, args.resource_group)
@@ -1272,6 +1337,13 @@ def build_parser():
         help="Seconds to wait for the preview execution's results. Default 900.",
     )
     add("set-secret", cmd_set_secret, "Store or rotate one job's Entra client secret.", needs_job=True)
+    set_field = add("set", cmd_set, "Change one field in jobs/JOB.json.", needs_job=True)
+    set_field.add_argument("field", help="Field to change, as SECTION.FIELD: for example copy.scheduleUtc.")
+    set_field.add_argument(
+        "value",
+        help="New value. Booleans are true or false, numbers are plain digits, lists are JSON arrays.",
+    )
+
     add("apply", cmd_apply, "Publish jobs/JOB.json to the deployed job.", needs_job=True)
     add("pull", cmd_pull, "Write jobs/*.json from what is deployed in Azure.")
     add("enable", cmd_enable, "Activate one job's schedule.", needs_job=True)

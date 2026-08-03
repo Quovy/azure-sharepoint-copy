@@ -136,6 +136,81 @@ expect_failure(
     "two different SharePoint sites",
 )
 
+# --- set: change one field in a job file ------------------------------------
+def run_set(field, value, jobs=None, job="default"):
+    """Run 'set' against a throwaway jobs directory.
+
+    Returns the completed process and the job file as it was left behind, so a
+    rejected edit can be checked for having changed nothing.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        jobs_path = Path(directory) / "jobs"
+        jobs_path.mkdir()
+        for filename, config in (jobs or {"default.json": copy.deepcopy(JOB)}).items():
+            (jobs_path / filename).write_text(json.dumps(config, indent=2) + "\n")
+        result = subprocess.run(
+            [sys.executable, str(COPYCTL), "set", job, field, value],
+            env={**os.environ, "COPY_JOBS_DIR": str(jobs_path)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        written = jobs_path / f"{job}.json"
+        return result, (json.loads(written.read_text()) if written.exists() else None)
+
+
+def expect_set(label, field, value, expected, jobs=None):
+    result, document = run_set(field, value, jobs)
+    check(label, result.returncode == 0, result.stderr.strip())
+    if document is None:
+        return
+    section, _, name = field.partition(".")
+    actual = document[section][name]
+    check(label, actual == expected and type(actual) is type(expected), f"file holds {actual!r}")
+
+
+def expect_set_failure(label, field, value, message, jobs=None):
+    result, document = run_set(field, value, jobs)
+    check(label, result.returncode != 0, "expected the edit to be refused")
+    check(label, message in result.stderr, f"expected '{message}' in: {result.stderr.strip()}")
+    check(label, document == (jobs or {"default.json": JOB})["default.json"], "a refused edit rewrote the file")
+
+
+expect_set("set-text", "source.path", "Reports/2026", "Reports/2026")
+expect_set("set-schedule", "copy.scheduleUtc", "30 4 * * 1-5", "30 4 * * 1-5")
+# A quoted boolean is the mistake validation already rejects in hand-edited
+# files, so set must write a real one.
+expect_set("set-boolean", "copy.dryRun", "false", False)
+expect_set("set-number", "copy.timeoutMinutes", "45", 45)
+expect_set("set-list", "source.includePaths", '["Invoices/2026", "Reports"]', ["Invoices/2026", "Reports"])
+
+expect_set_failure("set-boolean-word", "copy.dryRun", "yes", "must be true or false")
+expect_set_failure("set-number-text", "copy.timeoutMinutes", "soon", "must be a whole number")
+expect_set_failure("set-list-not-json", "source.includePaths", "Invoices,Reports", "must be a JSON array")
+expect_set_failure("set-unknown-field", "copy.retries", "3", "is not a field of default.json")
+expect_set_failure("set-unknown-section", "cleanup.mode", "purge", "is not a settable field")
+# The filename is what ties a job file to its deployed job.
+expect_set_failure("set-name-refused", "name", "renamed", "is not a settable field")
+
+# Every rule 'validate' enforces must also gate an edit, including the ones
+# that span fields, and a refused edit must leave the file untouched.
+expect_set_failure("set-invalid-cron", "copy.scheduleUtc", "0 99 * * *", "hour value out of range")
+expect_set_failure("set-traversal", "source.path", "../outside", "must not contain '..'")
+expect_set_failure("set-overlap", "copy.scheduleUtc", "0 * * * *", "executions would overlap")
+filtered = copy.deepcopy(JOB)
+filtered["source"]["modifiedOnOrAfter"] = "2026-07-01"
+expect_set_failure(
+    "set-conflicting-filters",
+    "source.includePaths",
+    '["Invoices"]',
+    "cannot be used together",
+    {"default.json": filtered},
+)
+
+missing_result, _ = run_set("source.path", "x", job="ghost")
+check("set-missing-job", missing_result.returncode != 0, "expected a missing job file to be refused")
+check("set-missing-job-message", "does not exist" in missing_result.stderr, missing_result.stderr.strip())
+
 # --- the environment mapping round-trips ------------------------------------
 env_result = subprocess.run(
     [sys.executable, str(COPYCTL), "env", "default"],
