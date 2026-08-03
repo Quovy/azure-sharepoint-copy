@@ -74,6 +74,29 @@ Edit `jobs/<name>.json`, then:
 ./copyctl.py apply <name>
 ```
 
+Or read and change single values from the command line, without opening an
+editor:
+
+```bash
+./copyctl.py get-config <name>                    # every field and its value
+./copyctl.py get-config <name> copy.scheduleUtc   # just one
+
+./copyctl.py set-config <name> copy.scheduleUtc "30 4 * * 1-5"
+./copyctl.py set-config <name> source.path Reports/2026
+./copyctl.py set-config <name> copy.timeoutMinutes 45
+./copyctl.py set-config <name> source.includePaths '["Invoices/2026", "Reports"]'
+./copyctl.py apply <name>
+```
+
+Both take the field as `section.field`. `get-config` prints a value as the text
+`set-config` accepts back, so a value can be read, edited, and put back without
+quoting games. `set-config` reads the value as the type that field already holds
+— `dryRun false` writes a boolean, not the string `"false"` — and validates the
+whole file before writing it, so a rejected value leaves the job file exactly as
+it was.
+
+Both work only on the local file; `apply` is still what publishes it to Azure.
+
 SharePoint rewrites some uploaded Office files, so the copy uses rclone's
 SharePoint compatibility settings and a successful copy is not a byte-for-byte
 guarantee. See [SECURITY.md](SECURITY.md).
