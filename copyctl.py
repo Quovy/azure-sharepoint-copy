@@ -915,12 +915,20 @@ def cmd_preview(args):
     """
     record = deployed_job(args.subscription, args.job, args.resource_group)
     env = record["env"]
-    # A preview must never upload. Refusing is better than silently switching a
-    # live job to dry run, which would change deployed state behind the operator.
+    # A preview must never upload. Container Apps offers no safe per-execution
+    # override to lean on: `job start --env-vars` is ignored outright, and the
+    # --yaml form replaces the whole container template, dropping the Key Vault
+    # secret reference with it. Rebuilding that template here to force one
+    # variable would risk a live upload whenever the rebuild was imperfect, so
+    # the mode is left to the operator and stated plainly instead.
     if env.get("COPY_DRY_RUN") == "false":
         fail(
-            f"Job '{args.job}' is in live mode, so an execution would upload files. "
-            f"Run 'copyctl.py dry-run {args.job}' first, then preview."
+            f"Job '{args.job}' is in live mode, so an execution would upload files.\n"
+            f"  Switch it, preview, then switch back:\n"
+            f"    copyctl.py dry-run {args.job}\n"
+            f"    copyctl.py preview {args.job}\n"
+            f"    copyctl.py go-live {args.job}\n"
+            f"Switching to dry run never uploads, and leaves the schedule untouched."
         )
     print(f"Job              {record['name']} ({record['resourceName']})")
     print(f"Source           {env.get('SOURCE_TYPE')}: {env.get('SOURCE_STORAGE_ACCOUNT')}/"
