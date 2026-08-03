@@ -4,7 +4,7 @@ Scheduled, one-way copy jobs from Azure Files or ADLS Gen2 into SharePoint
 document libraries. Everything runs inside your own Azure subscription and
 Microsoft 365 tenant. Nothing is ever deleted at the destination.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FQuovy%2Fazure-sharepoint-copy%2Fv0.2.3%2Finfra%2Fmain.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2FQuovy%2Fazure-sharepoint-copy%2Fv0.2.3%2Finfra%2FcreateUiDefinition.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FQuovy%2Fazure-sharepoint-copy%2Fv0.2.4%2Finfra%2Fmain.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2FQuovy%2Fazure-sharepoint-copy%2Fv0.2.4%2Finfra%2FcreateUiDefinition.json)
 
 ## Install
 
@@ -46,6 +46,7 @@ file moves until you explicitly activate it.
 ./copyctl.py set-secret default       # hidden prompt for the Entra client secret
 ./copyctl.py grant-source default     # only if the source has a storage firewall
 ./copyctl.py start default            # run one dry-run execution now
+./copyctl.py preview default          # how many files a dry run would copy
 ./copyctl.py status default           # mode, schedule, and recent executions
 ./copyctl.py go-live default          # dry run -> live, requires typed confirmation
 ./copyctl.py enable default           # activate the schedule
@@ -134,3 +135,7 @@ creating each job, so a private registry will not work without it.
   that specific site.
 - The source storage account must allow public network access. Accounts
   reachable only through an existing private endpoint are not supported.
+- `copyctl.py preview` additionally needs the `log-analytics` Azure CLI
+  extension (`az extension add --name log-analytics`) and read access to the
+  deployment's Log Analytics workspace. No other command reads that workspace,
+  so an operator who can run everything else may still need this granted.

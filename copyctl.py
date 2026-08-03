@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -471,6 +472,170 @@ def discover(subscription, resource_group=None):
     return jobs
 
 
+def workspace_id_for(subscription, record):
+    """Log Analytics customer ID behind this job's Container Apps environment.
+
+    Read from the environment rather than stored, for the same reason discovery
+    is tag-driven: nothing about a deployment is cached on this machine.
+    """
+    environment = az_json(
+        "containerapp",
+        "env",
+        "show",
+        *subscription_args(subscription),
+        "--ids",
+        record["environmentId"],
+        "--query",
+        "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId",
+    )
+    if not environment:
+        fail(
+            "This job's Container Apps environment has no Log Analytics workspace, "
+            "so execution output cannot be read back."
+        )
+    return environment
+
+
+# Nothing is readable until the replica has started and rclone has run, so the
+# first poll is delayed rather than spent on a query that cannot yet succeed.
+PREVIEW_FIRST_POLL_SECONDS = 20
+PREVIEW_POLL_SECONDS = 5
+# A preview waits a minute or two with nothing to report. Ticking faster than it
+# polls keeps the elapsed counter moving, so the wait cannot be read as a hang.
+PREVIEW_TICK_SECONDS = 1
+
+
+def preview_progress(elapsed, note):
+    """Overwrite one line with the elapsed time, only when a person is watching.
+
+    Piped or redirected output stays clean for scripting.
+    """
+    if not sys.stdout.isatty():
+        return
+    minutes, seconds = divmod(int(elapsed), 60)
+    sys.stdout.write(f"\r  {minutes}:{seconds:02d} elapsed - {note}".ljust(72))
+    sys.stdout.flush()
+
+
+def clear_preview_progress():
+    if sys.stdout.isatty():
+        sys.stdout.write("\r".ljust(72) + "\r")
+        sys.stdout.flush()
+
+
+def preview_preflight(subscription, workspace):
+    """Prove the results can be read back before anything is started.
+
+    Starting an execution and only then discovering that Log Analytics is
+    unreachable would leave a run nobody can observe, so both the extension and
+    read access are checked first. Preview is the only command that reads the
+    workspace, so an operator who can run every other command may still lack it.
+    """
+    _, ok = run(
+        "az", "extension", "show", "--name", "log-analytics",
+        "--only-show-errors", "--output", "none",
+        allow_failure=True,
+    )
+    if not ok:
+        fail(
+            "Preview needs the 'log-analytics' Azure CLI extension to read execution "
+            "results. Install it with: az extension add --name log-analytics"
+        )
+    # `print` answers without touching a table, so a workspace that has not yet
+    # ingested anything is not mistaken for one that cannot be read.
+    _, ok = run(
+        "az", "monitor", "log-analytics", "query",
+        *subscription_args(subscription),
+        "--workspace", workspace,
+        "--analytics-query", "print probe=1",
+        "--only-show-errors", "--output", "none",
+        allow_failure=True,
+    )
+    if not ok:
+        fail(
+            f"Could not read Log Analytics workspace {workspace}. Preview needs read "
+            "access to it, which no other copyctl.py command requires. Ask for the "
+            "'Log Analytics Reader' role on that workspace."
+        )
+
+
+def execution_outcome_rows(subscription, workspace, execution):
+    """Every row that could end a preview, fetched in one query.
+
+    Container Apps names each replica after its execution, so the prefix match
+    keeps one preview from reading another execution's output. Statistics and
+    the wrapper's terminal records are collected together because a round trip
+    to Log Analytics costs far more than the extra rows.
+    """
+    rows = az_json(
+        "monitor",
+        "log-analytics",
+        "query",
+        *subscription_args(subscription),
+        "--workspace",
+        workspace,
+        "--analytics-query",
+        f"ContainerAppConsoleLogs_CL "
+        f"| where ContainerGroupName_s startswith '{execution}' "
+        f"| where Log_s contains '\"stats\"' "
+        f"or Log_s contains 'runtime_error' "
+        f"or Log_s contains 'transfer_complete' "
+        f"| project TimeGenerated, Log_s "
+        f"| order by TimeGenerated asc",
+    )
+    return rows or []
+
+
+def wait_for_execution_stats(subscription, workspace, execution, wait_seconds):
+    """Poll until rclone's final stats object for this execution is readable.
+
+    Polling the log rather than the execution status is both faster and more
+    precise: the statistics are written when rclone finishes, while the
+    execution is not marked complete until its replica is torn down.
+    """
+    started = time.monotonic()
+    deadline = started + wait_seconds
+    next_query = started + min(PREVIEW_FIRST_POLL_SECONDS, max(0, wait_seconds))
+    note = "starting the execution"
+    while True:
+        now = time.monotonic()
+        if now >= next_query:
+            preview_progress(now - started, "reading results")
+            terminal = []
+            for row in execution_outcome_rows(subscription, workspace, execution):
+                line = row["Log_s"]
+                if '"stats"' in line:
+                    try:
+                        stats = json.loads(line).get("stats")
+                    except json.JSONDecodeError:
+                        stats = None
+                    if stats:
+                        clear_preview_progress()
+                        return stats
+                else:
+                    terminal.append(line)
+            # A run that fails before rclone starts never writes statistics, so
+            # the wrapper's terminal records end the wait, not the deadline.
+            if terminal:
+                clear_preview_progress()
+                return {"_failed": terminal}
+            next_query = time.monotonic() + PREVIEW_POLL_SECONDS
+            note = "waiting for the execution to finish"
+        if time.monotonic() >= deadline:
+            clear_preview_progress()
+            return None
+        preview_progress(time.monotonic() - started, note)
+        time.sleep(PREVIEW_TICK_SECONDS)
+
+
+def human_bytes(count):
+    value = float(count)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:,.2f} {unit}" if unit != "B" else f"{int(value):,} B"
+        value /= 1024
+
+
 def deployed_job(subscription, name, resource_group=None):
     jobs = discover(subscription, resource_group)
     if name not in jobs:
@@ -740,6 +905,72 @@ def cmd_start(args):
         "none",
     )
     print(f"[{args.job}] Started one {mode} execution. Check it with 'copyctl.py status {args.job}'.")
+
+
+def cmd_preview(args):
+    """Report what one dry-run execution would copy, without uploading anything.
+
+    This reads rclone's own final statistics rather than recounting anything, so
+    the numbers are exactly the ones the real copy would act on.
+    """
+    record = deployed_job(args.subscription, args.job, args.resource_group)
+    env = record["env"]
+    # A preview must never upload. Container Apps offers no safe per-execution
+    # override to lean on: `job start --env-vars` is ignored outright, and the
+    # --yaml form replaces the whole container template, dropping the Key Vault
+    # secret reference with it. Rebuilding that template here to force one
+    # variable would risk a live upload whenever the rebuild was imperfect, so
+    # the mode is left to the operator and stated plainly instead.
+    if env.get("COPY_DRY_RUN") == "false":
+        fail(
+            f"Job '{args.job}' is in live mode, so an execution would upload files.\n"
+            f"  Switch it, preview, then switch back:\n"
+            f"    copyctl.py dry-run {args.job}\n"
+            f"    copyctl.py preview {args.job}\n"
+            f"    copyctl.py go-live {args.job}\n"
+            f"Switching to dry run never uploads, and leaves the schedule untouched."
+        )
+    print(f"Job              {record['name']} ({record['resourceName']})")
+    print(f"Source           {env.get('SOURCE_TYPE')}: {env.get('SOURCE_STORAGE_ACCOUNT')}/"
+          f"{env.get('SOURCE_CONTAINER_OR_SHARE')}/{env.get('SOURCE_PATH', '')}")
+    print(f"Destination      {env.get('DEST_SITE_URL')} / {env.get('DEST_LIBRARY')} / {env.get('DEST_PATH', '')}")
+    print(f"Existing files   {env.get('COPY_EXISTING_FILES')}")
+
+    workspace = workspace_id_for(args.subscription, record)
+    preview_preflight(args.subscription, workspace)
+    started = az_json(
+        "containerapp",
+        "job",
+        "start",
+        *subscription_args(args.subscription),
+        "--resource-group",
+        record["resourceGroup"],
+        "--name",
+        record["resourceName"],
+    )
+    execution = (started or {}).get("name") or ""
+    if not execution:
+        fail("Azure did not return an execution name for the preview run.")
+    print(f"\nPreview execution {execution} started. Waiting for results (usually 1-2 minutes).")
+
+    stats = wait_for_execution_stats(args.subscription, workspace, execution, args.wait)
+    if stats is None:
+        fail(
+            f"No results within {args.wait}s. The execution may still be running: "
+            f"check it with 'copyctl.py status {args.job}'."
+        )
+    if "_failed" in stats:
+        print("\nThe preview execution ended without copying anything:")
+        for line in stats["_failed"]:
+            print(f"  {line}")
+        fail("Preview did not complete. Nothing was uploaded.")
+
+    print(f"\nWould copy       {stats.get('totalTransfers', 0):,} files, "
+          f"{human_bytes(stats.get('totalBytes', 0))}")
+    print(f"Objects listed   {stats.get('listed', 0):,}")
+    print(f"Errors           {stats.get('errors', 0)}")
+    print(f"Elapsed          {stats.get('elapsedTime', 0):.1f}s")
+    print("\nNothing was uploaded. This job is still in dry-run mode.")
 
 
 def cmd_apply(args):
@@ -1028,6 +1259,18 @@ def build_parser():
     add("list", cmd_list, "List deployed copy jobs and their current mode.")
     add("status", cmd_status, "Show one job's configuration and recent executions.", needs_job=True)
     add("start", cmd_start, "Start one execution now.", needs_job=True)
+    preview = add(
+        "preview",
+        cmd_preview,
+        "Report what a dry run would copy, without uploading anything.",
+        needs_job=True,
+    )
+    preview.add_argument(
+        "--wait",
+        type=int,
+        default=900,
+        help="Seconds to wait for the preview execution's results. Default 900.",
+    )
     add("set-secret", cmd_set_secret, "Store or rotate one job's Entra client secret.", needs_job=True)
     add("apply", cmd_apply, "Publish jobs/JOB.json to the deployed job.", needs_job=True)
     add("pull", cmd_pull, "Write jobs/*.json from what is deployed in Azure.")

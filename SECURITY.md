@@ -139,6 +139,14 @@ rclone emits JSON logs including per-file copy decisions and transfer
 statistics. Container Apps sends stdout and stderr to a Log Analytics workspace
 with 90-day retention.
 
+`copyctl.py preview` starts one dry-run execution and reads that execution's
+statistics back out of the workspace, so it needs read access there. No other
+command reads it. Preview refuses to run against a job in live mode rather than
+switching the mode itself: Container Apps has no per-execution override that
+preserves the job's Key Vault secret reference, so forcing dry run for a single
+execution cannot be done safely. Switch the job with `dry-run`, preview, then
+`go-live`.
+
 Because the entire job configuration lives in the Container Apps job's
 environment variables, `az containerapp job show` and the Azure portal are a
 complete, current record of what a job will copy and where. Configuration changes
