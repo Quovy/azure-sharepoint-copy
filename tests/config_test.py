@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Configuration validation tests. No Azure access required."""
 
+import argparse
+import contextlib
 import copy
+import io
 import json
 import os
 import subprocess
@@ -307,6 +310,115 @@ check(
     "deploy-params-omit-empty-registry",
     "containerRegistryResourceId" not in document["parameters"],
     "an empty registry ID must not be sent as a parameter",
+)
+
+# --- check-source separates the layers behind a storage 403 -----------------
+CHECK_RECORD = {
+    "name": "default",
+    "resourceName": "file-copy-default",
+    "resourceGroup": "rg-copy",
+    "environmentId": "/subscriptions/s/resourceGroups/rg-copy/providers/Microsoft.App/managedEnvironments/file-copy-environment",
+    "env": {
+        "SOURCE_TYPE": "adls_gen2",
+        "SOURCE_SUBSCRIPTION_ID": "s",
+        "SOURCE_RESOURCE_GROUP": "rg-source-files",
+        "SOURCE_STORAGE_ACCOUNT": "examplestorage",
+    },
+}
+CHECK_ACCOUNT_ID = (
+    "/subscriptions/s/resourceGroups/rg-source-files"
+    "/providers/Microsoft.Storage/storageAccounts/examplestorage"
+)
+
+
+def run_check_source(fake_run):
+    """Run cmd_check_source against faked az calls, returning (output, exit_code)."""
+    saved = (copyctl.run, copyctl.az_json, copyctl.deployed_job)
+    copyctl.run = fake_run
+    copyctl.az_json = fake_az_json  # subnet_id_for reads the environment's subnet
+    copyctl.deployed_job = lambda *args, **kwargs: CHECK_RECORD
+    output = io.StringIO()
+    code = 0
+    try:
+        with contextlib.redirect_stdout(output):
+            copyctl.cmd_check_source(
+                argparse.Namespace(subscription=None, job="default", resource_group=None)
+            )
+    except SystemExit as exit_error:
+        code = exit_error.code
+    finally:
+        copyctl.run, copyctl.az_json, copyctl.deployed_job = saved
+    return output.getvalue(), code
+
+
+def fake_run_firewall_deny(*args, allow_failure=False, stdin_text=None):
+    check(
+        "check-source-tolerates-az-failures",
+        allow_failure,
+        f"an az call that can fail on permissions must use allow_failure: {args[:4]}",
+    )
+    if args[1:3] == ("identity", "show"):
+        return "11111111-2222-3333-4444-555555555555", True
+    if args[1:4] == ("role", "assignment", "list"):
+        return json.dumps([{
+            "role": "Storage Blob Data Reader",
+            "scope": CHECK_ACCOUNT_ID + "/blobServices/default/containers/data",
+        }]), True
+    if args[1:4] == ("storage", "account", "show"):
+        # The firewall denies by default and holds no rule for the copy subnet.
+        return json.dumps({"public": "Enabled", "action": "Deny", "rules": []}), True
+    if args[1:5] == ("network", "vnet", "subnet", "show"):
+        return json.dumps(["Microsoft.Storage"]), True
+    if args[1:4] == ("network", "private-endpoint-connection", "list"):
+        return "[]", True
+    raise AssertionError(f"unexpected az call: {args}")
+
+
+deny_output, deny_code = run_check_source(fake_run_firewall_deny)
+check("check-source-fails-on-missing-rule", deny_code == 1, f"exit code was {deny_code}")
+check(
+    "check-source-names-the-failing-layer",
+    "FAIL" in deny_output and "firewall rule" in deny_output,
+    deny_output,
+)
+check(
+    "check-source-names-the-fix",
+    "grant-source" in deny_output,
+    "a FAIL line must say which command repairs it",
+)
+check(
+    "check-source-reports-private-endpoints",
+    "private endpoints" in deny_output and "none exist" in deny_output,
+    "the private endpoint layer must be reported even when this deployment uses none",
+)
+
+
+def fake_run_no_permission(*args, allow_failure=False, stdin_text=None):
+    if args[1:3] == ("identity", "show"):
+        return "11111111-2222-3333-4444-555555555555", True
+    if args[1:4] == ("role", "assignment", "list"):
+        return "", False
+    if args[1:4] == ("storage", "account", "show"):
+        return "", False
+    if args[1:4] == ("network", "private-endpoint-connection", "list"):
+        return "", False
+    raise AssertionError(f"unexpected az call: {args}")
+
+
+unknown_output, unknown_code = run_check_source(fake_run_no_permission)
+check("check-source-unreadable-is-not-failure", unknown_code == 0, f"exit code was {unknown_code}")
+check(
+    "check-source-unreadable-is-unknown",
+    unknown_output.count("unknown ") >= 2,
+    "layers the operator cannot read must be reported as unknown, never as ok",
+)
+check(
+    "check-source-unreadable-is-not-ok",
+    not any(
+        line.strip().startswith("ok") and ("role assignment" in line or "network gate" in line)
+        for line in unknown_output.splitlines()
+    ),
+    "an unreadable layer must not be counted as passed",
 )
 
 if failures:
