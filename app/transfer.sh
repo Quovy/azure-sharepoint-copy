@@ -141,15 +141,18 @@ if [ -n "$SOURCE_TOP_UP_MAX_AGE" ]; then
     *) fail "SOURCE_TOP_UP_MAX_AGE_must_be_minutes_hours_or_days_like_48h" ;;
   esac
   case "$top_up_magnitude" in
-    "" | *[!0-9]*) fail "SOURCE_TOP_UP_MAX_AGE_must_be_minutes_hours_or_days_like_48h" ;;
+    "" | *[!0-9]* | 0*) fail "SOURCE_TOP_UP_MAX_AGE_must_be_minutes_hours_or_days_like_48h" ;;
   esac
   [ "$include_count" -eq 0 ] || fail "SOURCE_INCLUDE_PATHS_and_SOURCE_TOP_UP_MAX_AGE_cannot_be_combined"
   [ -z "$SOURCE_MODIFIED_ON_OR_AFTER" ] || fail "SOURCE_MODIFIED_ON_OR_AFTER_and_SOURCE_TOP_UP_MAX_AGE_cannot_be_combined"
 fi
 
 if [ -n "$COPY_TIMEOUT_MINUTES" ]; then
+  # copyctl.py enforces 5..1440; anything below 5 would leave --max-duration
+  # too small to be meaningful (a value of 1 would compute to 0m, which
+  # rclone treats as disabled).
   case "$COPY_TIMEOUT_MINUTES" in
-    "" | *[!0-9]* | 0) fail "COPY_TIMEOUT_MINUTES_must_be_a_whole_number_of_minutes" ;;
+    "" | *[!0-9]* | 0* | [1-4]) fail "COPY_TIMEOUT_MINUTES_must_be_at_least_5_minutes" ;;
   esac
 fi
 

@@ -192,6 +192,9 @@ run_transfer() {
 (
   base_env
   export SOURCE_TOP_UP_MAX_AGE=48h
+  # An empty destination must NOT enable --no-check-dest here: the top-up
+  # window skips the emptiness probe entirely.
+  export FAKE_LSF_EMPTY=true
   output="$(run_transfer)" || report "top-up" "exited non-zero"
   assert_contains "top-up" "$output" "--max-age"
   assert_contains "top-up" "$output" "48h"
@@ -261,6 +264,20 @@ expect_rejection() {
   base_env
   export SOURCE_TOP_UP_MAX_AGE=48x
   expect_rejection "top-up-format" "SOURCE_TOP_UP_MAX_AGE_must_be_minutes_hours_or_days"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+(
+  base_env
+  export SOURCE_TOP_UP_MAX_AGE=0h
+  expect_rejection "top-up-zero" "SOURCE_TOP_UP_MAX_AGE_must_be_minutes_hours_or_days"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+(
+  base_env
+  export COPY_TIMEOUT_MINUTES=4
+  expect_rejection "timeout-too-small" "COPY_TIMEOUT_MINUTES_must_be_at_least_5_minutes"
   [ "$failures" -eq 0 ] || exit 1
 ) || failures=$((failures + 1))
 
