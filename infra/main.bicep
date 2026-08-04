@@ -14,6 +14,9 @@ param vnetAddressPrefix string = '10.240.0.0/16'
 @description('Container Apps infrastructure subnet. Must be /27 or larger and inside the virtual network.')
 param containerAppsSubnetPrefix string = '10.240.0.0/27'
 
+@description('Subnet holding private endpoints to source storage accounts. Only used by jobs that set source.privateEndpoint. Must be inside the virtual network and must not overlap the Container Apps subnet.')
+param privateEndpointSubnetPrefix string = '10.240.0.32/27'
+
 @description('Published application image, pinned by digest. Override to use a copy imported into your own registry.')
 param containerImage string
 
@@ -44,6 +47,26 @@ var logWorkspaceName = '${baseName}-logs'
 var environmentName = '${baseName}-environment'
 var vnetName = '${baseName}-vnet'
 var subnetName = 'container-apps'
+var privateEndpointSubnetName = 'private-endpoints'
+
+// One private endpoint per distinct storage account and service, however many
+// jobs read that account. Deterministic resource names make a full redeploy and
+// a single-job addition converge on the same endpoints instead of duplicating
+// them. Safe access rather than a direct reference: parameter files written
+// before this field existed must keep deploying.
+var privateEndpointSources = union(map(
+  filter(jobs, job => job.source.?privateEndpoint ?? false),
+  job => {
+    subscriptionId: job.source.subscriptionId
+    resourceGroup: job.source.resourceGroup
+    storageAccount: job.source.storageAccount
+    service: job.source.type == 'azure_files' ? 'file' : 'blob'
+  }
+), [])
+var privateDnsZoneNames = union(map(
+  privateEndpointSources,
+  source => 'privatelink.${source.service}.core.windows.net'
+), [])
 
 // 31 February never occurs, so a job carrying this expression is deployed but
 // dormant. copyctl.py enable installs the real schedule after the operator has
@@ -118,6 +141,16 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
           ]
         }
       }
+      {
+        // Created even when no job uses a private endpoint: a subnet is free,
+        // and flipping source.privateEndpoint on later must never renumber or
+        // restructure a network the existing jobs run on.
+        name: privateEndpointSubnetName
+        properties: {
+          addressPrefix: privateEndpointSubnetPrefix
+          privateEndpointNetworkPolicies: 'Disabled'
+        }
+      }
     ]
   }
   tags: tags
@@ -126,6 +159,11 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
 resource containerAppsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
   parent: virtualNetwork
   name: subnetName
+}
+
+resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
+  parent: virtualNetwork
+  name: privateEndpointSubnetName
 }
 
 resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
@@ -213,6 +251,76 @@ module sourceAccess 'source-access.bicep' = [for (job, index) in jobs: {
   }
 }]
 
+// A source account that blocks public network access is reached through a
+// private endpoint here instead of a firewall rule. The connection is a manual
+// request rather than an auto-approval, so this deployment never needs any
+// permission on the storage account itself: the endpoint arrives Pending, and
+// the account's owner approves it once, in the portal or with
+// 'copyctl.py approve-source'.
+resource privateDnsZones 'Microsoft.Network/privateDnsZones@2020-06-01' = [for zoneName in privateDnsZoneNames: {
+  name: zoneName
+  location: 'global'
+  tags: tags
+}]
+
+resource privateDnsZoneLinks 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = [for (zoneName, index) in privateDnsZoneNames: {
+  parent: privateDnsZones[index]
+  name: '${vnetName}-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: virtualNetwork.id
+    }
+  }
+}]
+
+resource sourcePrivateEndpoints 'Microsoft.Network/privateEndpoints@2024-05-01' = [for source in privateEndpointSources: {
+  name: '${baseName}-pe-${source.service}-${source.storageAccount}'
+  location: location
+  properties: {
+    subnet: {
+      id: privateEndpointSubnet.id
+    }
+    manualPrivateLinkServiceConnections: [
+      {
+        name: '${source.storageAccount}-${source.service}'
+        properties: {
+          privateLinkServiceId: resourceId(
+            source.subscriptionId,
+            source.resourceGroup,
+            'Microsoft.Storage/storageAccounts',
+            source.storageAccount
+          )
+          groupIds: [
+            source.service
+          ]
+          requestMessage: 'Read-only copy service in resource group ${resourceGroup().name} (workload azure-sharepoint-copy).'
+        }
+      }
+    ]
+  }
+  tags: tags
+}]
+
+// Registers the endpoint's private IP so the container's normal lookup of the
+// account resolves to it. The NIC and its IP exist as soon as the endpoint is
+// created, so this works while the connection is still Pending.
+resource sourcePrivateDnsZoneGroups 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = [for (source, index) in privateEndpointSources: {
+  parent: sourcePrivateEndpoints[index]
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: source.service
+        properties: {
+          privateDnsZoneId: privateDnsZones[indexOf(privateDnsZoneNames, 'privatelink.${source.service}.core.windows.net')].id
+        }
+      }
+    ]
+  }
+}]
+
 resource copyJobs 'Microsoft.App/jobs@2024-03-01' = [for (job, index) in jobs: {
   name: '${baseName}-${job.name}'
   location: location
@@ -294,6 +402,13 @@ resource copyJobs 'Microsoft.App/jobs@2024-03-01' = [for (job, index) in jobs: {
             {
               name: 'SOURCE_MODIFIED_ON_OR_AFTER'
               value: job.source.modifiedOnOrAfter
+            }
+            {
+              // Not read by the container, which never notices how its packets
+              // reach the account. Carried so copyctl.py pull can rebuild the
+              // job file and status can report the connection's approval state.
+              name: 'SOURCE_PRIVATE_ENDPOINT'
+              value: (job.source.?privateEndpoint ?? false) ? 'true' : 'false'
             }
             {
               name: 'DEST_TENANT_ID'

@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.45.15.27210",
-      "templateHash": "3029749659695361185"
+      "version": "0.46.1.21595",
+      "templateHash": "3375540184311334437"
     }
   },
   "parameters": {
@@ -37,6 +37,13 @@
       "defaultValue": "10.240.0.0/27",
       "metadata": {
         "description": "Container Apps infrastructure subnet. Must be /27 or larger and inside the virtual network."
+      }
+    },
+    "privateEndpointSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.240.0.32/27",
+      "metadata": {
+        "description": "Subnet holding private endpoints to source storage accounts. Only used by jobs that set source.privateEndpoint. Must be inside the virtual network and must not overlap the Container Apps subnet."
       }
     },
     "containerImage": {
@@ -75,6 +82,9 @@
     "environmentName": "[format('{0}-environment', parameters('baseName'))]",
     "vnetName": "[format('{0}-vnet', parameters('baseName'))]",
     "subnetName": "container-apps",
+    "privateEndpointSubnetName": "private-endpoints",
+    "privateEndpointSources": "[union(map(filter(parameters('jobs'), lambda('job', coalesce(tryGet(lambdaVariables('job').source, 'privateEndpoint'), false()))), lambda('job', createObject('subscriptionId', lambdaVariables('job').source.subscriptionId, 'resourceGroup', lambdaVariables('job').source.resourceGroup, 'storageAccount', lambdaVariables('job').source.storageAccount, 'service', if(equals(lambdaVariables('job').source.type, 'azure_files'), 'file', 'blob')))), createArray())]",
+    "privateDnsZoneNames": "[union(map(variables('privateEndpointSources'), lambda('source', format('privatelink.{0}.core.windows.net', lambdaVariables('source').service))), createArray())]",
     "parkedCronExpression": "0 0 31 2 *",
     "keyVaultSecretsUserRoleDefinitionId": "4633458b-17de-408a-b874-0445c86b69e6"
   },
@@ -143,6 +153,13 @@
                   "service": "Microsoft.Storage.Global"
                 }
               ]
+            }
+          },
+          {
+            "name": "[variables('privateEndpointSubnetName')]",
+            "properties": {
+              "addressPrefix": "[parameters('privateEndpointSubnetPrefix')]",
+              "privateEndpointNetworkPolicies": "Disabled"
             }
           }
         ]
@@ -231,6 +248,91 @@
     },
     {
       "copy": {
+        "name": "privateDnsZones",
+        "count": "[length(variables('privateDnsZoneNames'))]"
+      },
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2020-06-01",
+      "name": "[variables('privateDnsZoneNames')[copyIndex()]]",
+      "location": "global",
+      "tags": "[variables('tags')]"
+    },
+    {
+      "copy": {
+        "name": "privateDnsZoneLinks",
+        "count": "[length(variables('privateDnsZoneNames'))]"
+      },
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2020-06-01",
+      "name": "[format('{0}/{1}', variables('privateDnsZoneNames')[copyIndex()], format('{0}-link', variables('vnetName')))]",
+      "location": "global",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneNames')[copyIndex()])]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "sourcePrivateEndpoints",
+        "count": "[length(variables('privateEndpointSources'))]"
+      },
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}-pe-{1}-{2}', parameters('baseName'), variables('privateEndpointSources')[copyIndex()].service, variables('privateEndpointSources')[copyIndex()].storageAccount)]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
+        },
+        "manualPrivateLinkServiceConnections": [
+          {
+            "name": "[format('{0}-{1}', variables('privateEndpointSources')[copyIndex()].storageAccount, variables('privateEndpointSources')[copyIndex()].service)]",
+            "properties": {
+              "privateLinkServiceId": "[resourceId(variables('privateEndpointSources')[copyIndex()].subscriptionId, variables('privateEndpointSources')[copyIndex()].resourceGroup, 'Microsoft.Storage/storageAccounts', variables('privateEndpointSources')[copyIndex()].storageAccount)]",
+              "groupIds": [
+                "[variables('privateEndpointSources')[copyIndex()].service]"
+              ],
+              "requestMessage": "[format('Read-only copy service in resource group {0} (workload azure-sharepoint-copy).', resourceGroup().name)]"
+            }
+          }
+        ]
+      },
+      "tags": "[variables('tags')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "sourcePrivateDnsZoneGroups",
+        "count": "[length(variables('privateEndpointSources'))]"
+      },
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('{0}-pe-{1}-{2}', parameters('baseName'), variables('privateEndpointSources')[copyIndex()].service, variables('privateEndpointSources')[copyIndex()].storageAccount), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "[variables('privateEndpointSources')[copyIndex()].service]",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneNames')[indexOf(variables('privateDnsZoneNames'), format('privatelink.{0}.core.windows.net', variables('privateEndpointSources')[copyIndex()].service))])]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneNames')[indexOf(variables('privateDnsZoneNames'), format('privatelink.{0}.core.windows.net', variables('privateEndpointSources')[copyIndex()].service))])]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}-{2}', parameters('baseName'), variables('privateEndpointSources')[copyIndex()].service, variables('privateEndpointSources')[copyIndex()].storageAccount))]"
+      ]
+    },
+    {
+      "copy": {
         "name": "copyJobs",
         "count": "[length(parameters('jobs'))]"
       },
@@ -306,6 +408,10 @@
                 {
                   "name": "SOURCE_MODIFIED_ON_OR_AFTER",
                   "value": "[parameters('jobs')[copyIndex()].source.modifiedOnOrAfter]"
+                },
+                {
+                  "name": "SOURCE_PRIVATE_ENDPOINT",
+                  "value": "[if(coalesce(tryGet(parameters('jobs')[copyIndex()].source, 'privateEndpoint'), false()), 'true', 'false')]"
                 },
                 {
                   "name": "DEST_TENANT_ID",
@@ -411,8 +517,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.45.15.27210",
-              "templateHash": "12063167822437718833"
+              "version": "0.46.1.21595",
+              "templateHash": "15261199759732654465"
             }
           },
           "parameters": {
@@ -496,8 +602,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.45.15.27210",
-              "templateHash": "1372097203115090456"
+              "version": "0.46.1.21595",
+              "templateHash": "18441293462810144651"
             }
           },
           "parameters": {
