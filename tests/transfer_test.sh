@@ -41,7 +41,20 @@ for argument in "$@"; do
 done
 case "$url" in
   *login.microsoftonline.com*)
-    [ "${FAKE_TOKEN_FAIL:-false}" != "true" ] || exit 22
+    # --fail-with-body still writes the body, so the failure paths must too.
+    # The description is Entra's real shape: multi-line, with a trace id.
+    case "${FAKE_TOKEN_FAIL:-false}" in
+      true)
+        printf '{"error":"invalid_client","error_description":"AADSTS7000222: The provided client secret keys for app %s are expired.\\r\\nTrace ID: 00000000-0000-0000-0000-00000000000a"}\n' \
+          "${DEST_CLIENT_ID:-}"
+        exit 22
+        ;;
+      html)
+        # What a proxy in front of the job returns, rather than Entra.
+        printf '<html><head><title>403 Forbidden</title></head>\n<body>blocked</body></html>\n'
+        exit 22
+        ;;
+    esac
     printf '{"access_token":"fake-token","expires_in":3599}\n'
     ;;
   *graph.microsoft.com/v1.0/sites/*/drives*)
@@ -49,6 +62,10 @@ case "$url" in
       "${FAKE_DRIVE_ID:-drive-1}" "${FAKE_LIBRARY_NAME:-Documents}"
     ;;
   *graph.microsoft.com/v1.0/sites/*)
+    if [ "${FAKE_SITE_FAIL:-false}" = "true" ]; then
+      printf '{"error":{"code":"accessDenied","message":"Access denied. You do not have permission to perform this action or access this resource."}}\n'
+      exit 22
+    fi
     printf '{"id":"contoso.sharepoint.com,site-guid,web-guid"}\n'
     ;;
   *)
@@ -73,7 +90,7 @@ base_env() {
   export JQ_BIN="${JQ_BIN:-jq}"
   export AZURE_MANAGED_IDENTITY_CLIENT_ID=00000000-0000-0000-0000-000000000003
   export RCLONE_CONFIG_DESTINATION_CLIENT_SECRET='test-only-secret~with+special/chars='
-  unset FAKE_RCLONE_EXIT_CODE FAKE_TOKEN_FAIL FAKE_DRIVE_ID FAKE_LIBRARY_NAME || true
+  unset FAKE_RCLONE_EXIT_CODE FAKE_TOKEN_FAIL FAKE_SITE_FAIL FAKE_DRIVE_ID FAKE_LIBRARY_NAME || true
 }
 
 report() {
@@ -210,6 +227,33 @@ expect_rejection() {
   base_env
   export FAKE_TOKEN_FAIL=true
   expect_rejection "bad-credential" "entra_rejected_the_client_id_or_secret"
+  # The label alone cannot separate a wrong secret from an expired one, so the
+  # AADSTS code has to survive, on one line, without the secret beside it.
+  assert_contains "bad-credential" "$output" "entra_curl_exit=22"
+  assert_contains "bad-credential" "$output" "entra_detail=invalid_client: AADSTS7000222"
+  assert_missing "bad-credential" "$output" "test-only-secret"
+  # Entra's CRLF collapses to spaces, so Log Analytics gets one row, not three.
+  assert_contains "bad-credential" "$output" "are expired.  Trace ID:"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+# --- a body that is not Entra's JSON is still reported verbatim -------------
+(
+  base_env
+  export FAKE_TOKEN_FAIL=html
+  expect_rejection "proxy-body" "entra_rejected_the_client_id_or_secret"
+  assert_contains "proxy-body" "$output" "entra_detail=<html>"
+  assert_contains "proxy-body" "$output" "403 Forbidden"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+# --- a denied site lookup reports Graph's code, not just the label ----------
+(
+  base_env
+  export FAKE_SITE_FAIL=true
+  expect_rejection "site-denied" "graph_denied_or_failed_the_site_lookup"
+  assert_contains "site-denied" "$output" "graph_site_curl_exit=22"
+  assert_contains "site-denied" "$output" "graph_site_detail=accessDenied: Access denied."
   [ "$failures" -eq 0 ] || exit 1
 ) || failures=$((failures + 1))
 

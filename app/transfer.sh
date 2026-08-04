@@ -164,6 +164,47 @@ graph_token() {
       "https://login.microsoftonline.com/${DEST_TENANT_ID}/oauth2/v2.0/token"
 }
 
+# Microsoft's error responses carry the detail the labels below cannot: Entra
+# returns an AADSTS code that separates a wrong secret from an expired one from
+# a tenant the application does not exist in, and Graph separates a missing site
+# grant (accessDenied) from a wrong site URL (itemNotFound). curl
+# --fail-with-body already hands us that body, so log it instead of making the
+# operator guess. Neither service echoes the client secret or the bearer token
+# in an error response, so this is safe to write to the job log.
+report_error_detail() {
+  label="$1"
+  curl_status="$2"
+  body="$3"
+
+  printf '%s_curl_exit=%s\n' "$label" "$curl_status" >&2
+  detail="$(
+    printf '%s' "$body" |
+      "$JQ_BIN" -r '
+        if type != "object" then empty
+        else
+          (if (.error? | type) == "object"
+           then [.error.code?, .error.message?]
+           else [.error?, .error_description?]
+           end)
+          | map(select(type == "string" and . != ""))
+          | join(": ")
+        end
+      ' 2>/dev/null |
+      # One log line per error: AADSTS descriptions embed newlines and a trace id.
+      tr '\r\n' '  ' |
+      cut -c 1-800
+  )"
+  # A body jq cannot read is itself the finding — an HTML error page means a
+  # proxy answered, not Entra or Graph. Fall back to the raw text so that case
+  # is visible rather than silently reduced to the label above.
+  if [ -z "$detail" ]; then
+    detail="$(printf '%s' "$body" | tr '\r\n' '  ' | cut -c 1-800)"
+  fi
+  case "$detail" in
+    *[!\ ]*) printf '%s_detail=%s\n' "$label" "$detail" >&2 ;;
+  esac
+}
+
 graph_get() {
   url="$1"
   # Microsoft Graph supplies continuation URLs. Refuse to follow one anywhere
@@ -180,11 +221,16 @@ graph_get() {
     "$url"
 }
 
-token_response="$(graph_token)" ||
+token_response="$(graph_token)" || {
+  report_error_detail entra "$?" "$token_response"
   runtime_fail "entra_rejected_the_client_id_or_secret"
+}
 access_token="$(printf '%s' "$token_response" | "$JQ_BIN" -r '.access_token // empty')"
+[ -n "$access_token" ] || {
+  report_error_detail entra 0 "$token_response"
+  runtime_fail "entra_returned_no_access_token"
+}
 unset token_response
-[ -n "$access_token" ] || runtime_fail "entra_returned_no_access_token"
 
 # The bearer token goes in a private file rather than the curl argument list.
 header_file="$(mktemp /tmp/azure-sharepoint-copy-header.XXXXXX)"
@@ -203,7 +249,10 @@ encoded_site_path="$(
 
 site_response="$(
   graph_get "https://graph.microsoft.com/v1.0/sites/${site_host}:/${encoded_site_path}?\$select=id"
-)" || runtime_fail "graph_denied_or_failed_the_site_lookup__confirm_Sites.Selected_and_the_site_grant"
+)" || {
+  report_error_detail graph_site "$?" "$site_response"
+  runtime_fail "graph_denied_or_failed_the_site_lookup__confirm_Sites.Selected_and_the_site_grant"
+}
 site_id="$(printf '%s' "$site_response" | "$JQ_BIN" -r '.id // empty')"
 [ -n "$site_id" ] || runtime_fail "graph_returned_an_incomplete_site_response"
 
@@ -211,7 +260,10 @@ drive_id=""
 library_names=""
 next_url="https://graph.microsoft.com/v1.0/sites/$(url_encode "$site_id")/drives?\$select=id,name"
 while [ -n "$next_url" ]; do
-  drives_response="$(graph_get "$next_url")" || runtime_fail "graph_failed_to_list_document_libraries"
+  drives_response="$(graph_get "$next_url")" || {
+    report_error_detail graph_drives "$?" "$drives_response"
+    runtime_fail "graph_failed_to_list_document_libraries"
+  }
   drive_id="$(
     printf '%s' "$drives_response" |
       "$JQ_BIN" -r --arg library "$DEST_LIBRARY" \
