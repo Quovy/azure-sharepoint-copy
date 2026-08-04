@@ -199,7 +199,7 @@ def cron_interval_minutes(value):
     return None
 
 
-def validate_network(vnet_text, subnet_text):
+def validate_network(vnet_text, subnet_text, pe_subnet_text=None):
     try:
         vnet = ipaddress.ip_network(vnet_text, strict=True)
         subnet = ipaddress.ip_network(subnet_text, strict=True)
@@ -220,6 +220,18 @@ def validate_network(vnet_text, subnet_text):
         fail("containerAppsSubnetPrefix must be /27 or larger.")
     if not subnet.subnet_of(vnet):
         fail("The Container Apps subnet must fit inside the virtual network.")
+    if pe_subnet_text is None:
+        return
+    try:
+        pe_subnet = ipaddress.ip_network(pe_subnet_text, strict=True)
+    except ValueError:
+        fail("Network ranges must use CIDR notation, for example 10.240.0.32/27.")
+    if pe_subnet.version != 4:
+        fail("Network ranges must use IPv4.")
+    if not pe_subnet.subnet_of(vnet):
+        fail("The private endpoints subnet must fit inside the virtual network.")
+    if pe_subnet.overlaps(subnet):
+        fail("The private endpoints subnet must not overlap the Container Apps subnet.")
 
 
 def read_json(path, label):
@@ -254,6 +266,7 @@ def load_job(path):
             "path",
             "includePaths",
             "modifiedOnOrAfter",
+            "privateEndpoint",
         ],
         f"{label}.source",
     )
@@ -326,6 +339,7 @@ def load_job(path):
             "path": relative_path(source["path"], f"{label}.source.path"),
             "includePaths": include_paths,
             "modifiedOnOrAfter": modified,
+            "privateEndpoint": boolean(source["privateEndpoint"], f"{label}.source.privateEndpoint"),
         },
         "destination": {
             "tenantId": uuid_text(destination["tenantId"], f"{label}.destination.tenantId"),
@@ -683,14 +697,22 @@ def deployment_settings(subscription, deployed, registry_id=""):
         "--ids", subnet_id,
         "--query", "addressPrefix",
     )
-    vnet = az_json(
+    network = az_json(
         "network", "vnet", "show",
         *subscription_args(subscription),
         "--ids", subnet_id.split("/subnets/")[0],
-        "--query", "addressSpace.addressPrefixes[0]",
+        "--query", "{prefix: addressSpace.addressPrefixes[0], subnets: subnets[].{name: name, prefix: addressPrefix}}",
     )
+    vnet = (network or {}).get("prefix")
     if not subnet or not vnet:
         fail("Could not read the deployed network's address prefixes.")
+    # Deployments made before the private endpoints subnet existed lack it;
+    # leaving the value empty lets the template's default apply on the next
+    # deployment instead of guessing an address here.
+    pe_subnet = next(
+        (entry["prefix"] for entry in network.get("subnets") or [] if entry["name"] == "private-endpoints"),
+        "",
+    )
     # Deploying a job on a different image than the fleet runs would leave one
     # route on a version nobody reviewed, so the running image is the default.
     images = {record["image"] for record in deployed.values()}
@@ -700,6 +722,7 @@ def deployment_settings(subscription, deployed, registry_id=""):
         "baseName": base_names.pop(),
         "vnet": vnet,
         "subnet": subnet,
+        "peSubnet": pe_subnet,
         "image": images.pop() if len(images) == 1 else "",
         # An operator who supplies the registry is not asked to prove it exists
         # here: the lookup only searches this subscription, and a registry in
@@ -768,6 +791,7 @@ def config_to_env(job):
         values[env_name] = str(job[section][field])
     values["SOURCE_INCLUDE_PATHS"] = json.dumps(job["source"]["includePaths"], separators=(",", ":"))
     values["COPY_DRY_RUN"] = "true" if job["copy"]["dryRun"] else "false"
+    values["SOURCE_PRIVATE_ENDPOINT"] = "true" if job["source"]["privateEndpoint"] else "false"
     return values
 
 
@@ -794,6 +818,9 @@ def env_to_config(record):
             "path": env.get("SOURCE_PATH", ""),
             "includePaths": include_paths,
             "modifiedOnOrAfter": env.get("SOURCE_MODIFIED_ON_OR_AFTER", ""),
+            # Absent on jobs deployed before this field existed, which behave
+            # exactly like an explicit false.
+            "privateEndpoint": env.get("SOURCE_PRIVATE_ENDPOINT", "false") == "true",
         },
         "destination": {
             "tenantId": env["DEST_TENANT_ID"],
@@ -867,7 +894,7 @@ def update_job(subscription, record, env_values=None, cron=None, timeout_minutes
 
 def cmd_validate(args):
     jobs = load_jobs()
-    validate_network(args.vnet, args.subnet)
+    validate_network(args.vnet, args.subnet, args.pe_subnet)
     for job in jobs:
         mode = "dry run" if job["copy"]["dryRun"] else "LIVE"
         print(f"  {job['name']:<20} {mode:<8} {job['copy']['scheduleUtc']} UTC")
@@ -902,7 +929,7 @@ def published_image():
     return value
 
 
-def params_document(jobs, base_name, vnet, subnet, image, registry_id="", location=""):
+def params_document(jobs, base_name, vnet, subnet, image, registry_id="", location="", pe_subnet=""):
     document = {
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
         "contentVersion": "1.0.0.0",
@@ -918,7 +945,11 @@ def params_document(jobs, base_name, vnet, subnet, image, registry_id="", locati
         document["parameters"]["containerRegistryResourceId"] = {"value": registry_id}
     if location:
         document["parameters"]["location"] = {"value": location}
-    validate_network(vnet, subnet)
+    # Omitted when empty so the template's default applies, exactly like
+    # location: a deployment made before the subnet existed keeps working.
+    if pe_subnet:
+        document["parameters"]["privateEndpointSubnetPrefix"] = {"value": pe_subnet}
+    validate_network(vnet, subnet, pe_subnet or None)
     return document
 
 
@@ -930,6 +961,7 @@ def cmd_params(args):
         args.subnet,
         args.image or published_image(),
         args.registry_id or "",
+        pe_subnet=args.pe_subnet or "",
     )
     jobs = document["parameters"]["jobs"]["value"]
     rendered = json.dumps(document, indent=2) + "\n"
@@ -949,6 +981,48 @@ def cmd_list(args):
         cron = record["cron"]
         schedule = "parked" if cron == PARKED_CRON else cron
         print(f"{name:<20} {mode:<8} {schedule:<16} {record['resourceName']}")
+
+
+def connection_properties(connection):
+    # az flattens the ARM 'properties' envelope for most network objects, but
+    # not in every output shape, so both layouts are accepted.
+    return connection.get("properties") or connection
+
+
+def private_endpoint_state(subscription, record, env):
+    """Approval state of the private endpoint serving this job's source.
+
+    Read from the endpoint in the copy resource group rather than from the
+    storage account, so the operator's usual role is enough to see it. A
+    Pending connection blocks every request with the same 403 the storage
+    firewall produces, which is why status surfaces it.
+    """
+    endpoints = az_json(
+        "network", "private-endpoint", "list",
+        *subscription_args(subscription),
+        "--resource-group", record["resourceGroup"],
+    ) or []
+    account = env.get("SOURCE_STORAGE_ACCOUNT", "")
+    suffix = f"/providers/microsoft.storage/storageaccounts/{account}".lower()
+    for endpoint in endpoints:
+        if (endpoint.get("tags") or {}).get("workload") != WORKLOAD_TAG:
+            continue
+        connections = (endpoint.get("manualPrivateLinkServiceConnections") or []) + (
+            endpoint.get("privateLinkServiceConnections") or []
+        )
+        for connection in connections:
+            properties = connection_properties(connection)
+            if not (properties.get("privateLinkServiceId") or "").lower().endswith(suffix):
+                continue
+            state = (properties.get("privateLinkServiceConnectionState") or {}).get("status") or "Unknown"
+            if state == "Approved":
+                return f"Approved ({endpoint['name']})"
+            return (
+                f"{state} ({endpoint['name']}) - every request fails until the storage "
+                f"account's owner approves it: 'copyctl.py approve-source {record['name']}', "
+                "or the account's 'Private endpoint connections' page in the portal"
+            )
+    return "not found - run 'copyctl.py deploy' or redeploy the template to create it"
 
 
 def cmd_status(args):
@@ -973,6 +1047,8 @@ def cmd_status(args):
     print(f"Existing files   {env.get('COPY_EXISTING_FILES')}")
     print(f"Timeout          {int(record['replicaTimeout'] or 0) // 60} minutes")
     print(f"Image            {record['image']}")
+    if env.get("SOURCE_PRIVATE_ENDPOINT") == "true":
+        print(f"Private endpoint {private_endpoint_state(args.subscription, record, env)}")
 
     executions = az_json(
         "containerapp",
@@ -1106,10 +1182,14 @@ def cmd_deploy(args):
             "'deploy' adds a job to an existing deployment. For a first install, render every "
             "job with 'copyctl.py params' and deploy it as README.md describes."
         )
-    if args.job in deployed:
+    if args.job in deployed and not args.replace:
         fail(
             f"Job '{args.job}' is already deployed. "
-            f"Use 'copyctl.py apply {args.job}' to publish configuration changes to it."
+            f"Use 'copyctl.py apply {args.job}' to publish configuration changes to it, or "
+            f"re-run with --replace to redeploy the job itself - needed when a change only "
+            "the template can make, like turning on source.privateEndpoint, must reach a "
+            "deployed job. --replace returns that job's schedule to parked and its secret "
+            "to the placeholder, so finish with set-secret and enable."
         )
     settings = deployment_settings(args.subscription, deployed, args.registry_id or "")
     image = args.image or settings["image"]
@@ -1126,10 +1206,13 @@ def cmd_deploy(args):
         image,
         settings["registryId"],
         settings["location"],
+        args.pe_subnet or settings["peSubnet"],
     )
+    action = "Replacing one job in" if args.job in deployed else "Adding one job to"
+    others = sorted(set(deployed) - {args.job})
     print(
-        f"[{args.job}] Adding one job to the deployment in {settings['resourceGroup']}.\n"
-        f"  Existing jobs:  {', '.join(sorted(deployed))} (not included, so not changed)\n"
+        f"[{args.job}] {action} the deployment in {settings['resourceGroup']}.\n"
+        f"  Other jobs:     {', '.join(others) or '(none)'} (not included, so not changed)\n"
         f"  Image:          {image}\n"
         f"  Source:         {job['source']['storageAccount']}/{job['source']['containerOrShare']}\n"
         f"  Destination:    {job['destination']['siteUrl']} / {job['destination']['library']}"
@@ -1156,8 +1239,10 @@ def cmd_deploy(args):
         print("\nPreviewing the change (az deployment group what-if). This takes a minute.\n")
         print(run("az", "deployment", "group", "what-if", *common))
         print(
-            "\nOnly resources for this job should be marked Create, plus role assignments "
-            "on its source. Anything marked Modify or Delete on an existing job is a stop."
+            "\nOnly resources for this job should be marked Create"
+            + (" or Modify" if args.replace else "")
+            + ", plus role assignments on its source. Anything marked Modify or Delete "
+            "on another job is a stop."
         )
         confirm(f"ADD {args.job}", f"\nType 'ADD {args.job}' to deploy: ")
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -1171,7 +1256,10 @@ def cmd_deploy(args):
     mode = "dry-run mode" if job["copy"]["dryRun"] else "LIVE mode"
     print(f"\n[{args.job}] Deployed in {mode} with its schedule parked.")
     print(f"  ./copyctl.py set-secret {args.job}     # store the Entra client secret")
-    print(f"  ./copyctl.py grant-source {args.job}   # only if the source has a storage firewall")
+    if job["source"]["privateEndpoint"]:
+        print(f"  ./copyctl.py approve-source {args.job} # the private endpoint arrived Pending; the account's owner approves it")
+    else:
+        print(f"  ./copyctl.py grant-source {args.job}   # only if the source has a storage firewall")
     print(f"  ./copyctl.py start {args.job}          # run one execution now")
     if job["copy"]["dryRun"]:
         print(f"  ./copyctl.py go-live {args.job}        # dry run -> live, after reviewing that run")
@@ -1309,6 +1397,63 @@ def cmd_revoke_source(args):
     print(f"[{args.job}] " + ("Removed the copy subnet rule." if ok else "The subnet rule was already absent."))
 
 
+def cmd_approve_source(args):
+    """Approve the pending private endpoint connection on a job's source account.
+
+    Deploying requests the connection without needing any permission on the
+    storage account; approving it is the account owner's half of the handshake.
+    This command performs that approval for an operator who holds a role on the
+    account, and the portal's 'Private endpoint connections' page works equally
+    well for one who does not.
+    """
+    record = deployed_job(args.subscription, args.job, args.resource_group)
+    job = load_job_named(args.job)
+    source = job["source"]
+    if not source["privateEndpoint"]:
+        fail(f"Job '{args.job}' does not use a private endpoint. Nothing to approve.")
+    service = "file" if source["type"] == "azure_files" else "blob"
+    # The endpoint lives in the copy resource group with a deterministic name,
+    # which keeps this from ever approving a connection some other system
+    # requested on the same account.
+    endpoint_marker = f"/privateendpoints/{record['resourceName'][: -len(args.job) - 1]}-pe-{service}-{source['storageAccount']}".lower()
+    connections = az_json(
+        "network", "private-endpoint-connection", "list",
+        "--subscription", source["subscriptionId"],
+        "--resource-group", source["resourceGroup"],
+        "--name", source["storageAccount"],
+        "--type", "Microsoft.Storage/storageAccounts",
+    ) or []
+    matched = None
+    for connection in connections:
+        properties = connection_properties(connection)
+        endpoint_id = ((properties.get("privateEndpoint") or {}).get("id") or "").lower()
+        if endpoint_id.endswith(endpoint_marker):
+            matched = connection
+            break
+    if matched is None:
+        fail(
+            f"No private endpoint connection from this deployment was found on "
+            f"{source['storageAccount']}. Run 'copyctl.py deploy {args.job}' or redeploy "
+            "the template to create it."
+        )
+    state = (connection_properties(matched).get("privateLinkServiceConnectionState") or {}).get("status")
+    if state == "Approved":
+        print(f"[{args.job}] The private endpoint connection is already approved.")
+        return
+    run(
+        "az", "network", "private-endpoint-connection", "approve",
+        "--subscription", source["subscriptionId"],
+        "--id", matched["id"],
+        "--description", "Approved for the copy service.",
+        "--only-show-errors",
+        "--output", "none",
+    )
+    print(
+        f"[{args.job}] Approved the private endpoint connection on {source['storageAccount']}. "
+        f"Verify with 'copyctl.py start {args.job}' while the job is still in dry-run mode."
+    )
+
+
 def cmd_set_secret(args):
     record = deployed_job(args.subscription, args.job, args.resource_group)
     if not record["vaultName"] or not record["secretName"]:
@@ -1440,6 +1585,7 @@ def build_parser():
     validate = add("validate", cmd_validate, "Check every jobs/*.json file without contacting Azure.")
     validate.add_argument("--vnet", default="10.240.0.0/16")
     validate.add_argument("--subnet", default="10.240.0.0/27")
+    validate.add_argument("--pe-subnet", default="10.240.0.32/27")
 
     add("env", cmd_env, "Print the container environment one job file produces.", needs_job=True)
 
@@ -1459,6 +1605,7 @@ def build_parser():
     params.add_argument("--base-name", default="file-copy")
     params.add_argument("--vnet", default="10.240.0.0/16")
     params.add_argument("--subnet", default="10.240.0.0/27")
+    params.add_argument("--pe-subnet", default="10.240.0.32/27")
     params.add_argument("--out", help="Write to this path instead of standard output.")
 
     deploy = add(
@@ -1476,6 +1623,23 @@ def build_parser():
         help=(
             "Resource ID of a private Azure Container Registry holding the image. "
             "Defaults to the registry the deployed jobs pull from."
+        ),
+    )
+    deploy.add_argument(
+        "--pe-subnet",
+        help=(
+            "Address prefix for the private endpoints subnet. Defaults to the one "
+            "already deployed, or to the template's default when the deployment "
+            "predates it. Only needed when the virtual network uses custom addressing."
+        ),
+    )
+    deploy.add_argument(
+        "--replace",
+        action="store_true",
+        help=(
+            "Redeploy a job that already exists, for changes only the template can "
+            "make, like turning on source.privateEndpoint. Returns that job's schedule "
+            "to parked and its secret to the placeholder; other jobs stay untouched."
         ),
     )
 
@@ -1503,6 +1667,12 @@ def build_parser():
     add("dry-run", cmd_dry_run, "Switch one job back to dry run.", needs_job=True)
     add("grant-source", cmd_grant_source, "Add the copy subnet to the source storage firewall.", needs_job=True)
     add("revoke-source", cmd_revoke_source, "Remove the copy subnet from the source storage firewall.", needs_job=True)
+    add(
+        "approve-source",
+        cmd_approve_source,
+        "Approve the pending private endpoint connection on a job's source account.",
+        needs_job=True,
+    )
     return parser
 
 

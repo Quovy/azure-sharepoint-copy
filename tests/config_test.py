@@ -102,6 +102,14 @@ duplicate = copy.deepcopy(JOB)
 duplicate["source"]["includePaths"] = ["a", "a"]
 expect_failure("duplicate-include", {"default.json": duplicate}, "duplicate path")
 
+# --- the private endpoint flag ----------------------------------------------
+expect_success("private-endpoint", with_job(source__privateEndpoint=True))
+expect_failure(
+    "private-endpoint-quoted",
+    with_job(source__privateEndpoint="true"),
+    "must be true or false, without quotes",
+)
+
 # --- cron validation --------------------------------------------------------
 expect_failure("cron-too-few-fields", with_job(copy__scheduleUtc="0 2 * *"), "exactly five")
 expect_failure("cron-minute-range", with_job(copy__scheduleUtc="70 2 * * *"), "minute value out of range")
@@ -159,6 +167,11 @@ check(
     env_map.get("SOURCE_SUBSCRIPTION_ID") == JOB["source"]["subscriptionId"]
     and env_map.get("SOURCE_RESOURCE_GROUP") == JOB["source"]["resourceGroup"],
     "copyctl.py pull needs these to rebuild a job file",
+)
+check(
+    "env-carries-private-endpoint",
+    env_map.get("SOURCE_PRIVATE_ENDPOINT") == "false",
+    "pull and status read the private endpoint flag from the deployed job",
 )
 
 # --- apply must not drop variables the deployment template owns -------------
@@ -223,7 +236,11 @@ def fake_az_json(*args):
     if args[:4] == ("network", "vnet", "subnet", "show"):
         return "10.240.0.0/27"
     if args[:3] == ("network", "vnet", "show"):
-        return "10.240.0.0/16"
+        # A deployment made before the private endpoints subnet existed.
+        return {
+            "prefix": "10.240.0.0/16",
+            "subnets": [{"name": "container-apps", "prefix": "10.240.0.0/27"}],
+        }
     if args[:3] == ("containerapp", "job", "show"):
         return None  # no private registry
     raise AssertionError(f"unexpected az call: {args}")
@@ -237,6 +254,32 @@ check(
     (settings["vnet"], settings["subnet"]) == ("10.240.0.0/16", "10.240.0.0/27"),
     "a mistyped prefix would try to renumber the deployed network",
 )
+check(
+    "deploy-leaves-absent-pe-subnet-empty",
+    settings["peSubnet"] == "",
+    "an older deployment has no private endpoints subnet; the template default must apply",
+)
+
+
+def fake_az_json_with_pe_subnet(*args):
+    if args[:3] == ("network", "vnet", "show"):
+        return {
+            "prefix": "10.240.0.0/16",
+            "subnets": [
+                {"name": "container-apps", "prefix": "10.240.0.0/27"},
+                {"name": "private-endpoints", "prefix": "10.240.0.64/27"},
+            ],
+        }
+    return fake_az_json(*args)
+
+
+copyctl.az_json = fake_az_json_with_pe_subnet
+check(
+    "deploy-infers-pe-subnet",
+    copyctl.deployment_settings(None, DEPLOYED)["peSubnet"] == "10.240.0.64/27",
+    "re-declaring the deployed subnet with a different prefix would try to renumber it",
+)
+copyctl.az_json = fake_az_json
 check(
     "deploy-infers-running-image",
     settings["image"] == DEPLOYED["invoices"]["image"],
@@ -307,6 +350,33 @@ check(
     "deploy-params-omit-empty-registry",
     "containerRegistryResourceId" not in document["parameters"],
     "an empty registry ID must not be sent as a parameter",
+)
+check(
+    "deploy-params-omit-empty-pe-subnet",
+    "privateEndpointSubnetPrefix" not in document["parameters"],
+    "an empty prefix must fall through to the template default, like location",
+)
+with_pe_subnet = copyctl.params_document(
+    [copy.deepcopy(JOB)], "file-copy", "10.240.0.0/16", "10.240.0.0/27",
+    "example.invalid/copy@sha256:x", "", "eastus", "10.240.0.64/27",
+)
+check(
+    "deploy-params-carry-pe-subnet",
+    with_pe_subnet["parameters"]["privateEndpointSubnetPrefix"]["value"] == "10.240.0.64/27",
+    "a deployed prefix read back from Azure must reach the template",
+)
+try:
+    copyctl.params_document(
+        [copy.deepcopy(JOB)], "file-copy", "10.240.0.0/16", "10.240.0.0/27",
+        "example.invalid/copy@sha256:x", "", "eastus", "10.240.0.0/27",
+    )
+    overlapped = False
+except copyctl.CopyctlError:
+    overlapped = True
+check(
+    "pe-subnet-overlap-refused",
+    overlapped,
+    "a private endpoints subnet overlapping the Container Apps subnet must be rejected",
 )
 
 if failures:

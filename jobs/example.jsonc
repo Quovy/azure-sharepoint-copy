@@ -20,7 +20,11 @@
     // relative files and folders. Cannot be combined with modifiedOnOrAfter.
     "includePaths": [],
     // Optional YYYY-MM-DD cutoff on last-modified time, not creation time.
-    "modifiedOnOrAfter": ""
+    "modifiedOnOrAfter": "",
+    // Set true when the storage account has public network access disabled.
+    // Deploying then creates a private endpoint to it, which the account's
+    // owner must approve once: copyctl.py approve-source, or the portal.
+    "privateEndpoint": false
   },
   "destination": {
     "tenantId": "00000000-0000-4000-8000-000000000001",

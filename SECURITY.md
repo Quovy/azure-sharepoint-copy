@@ -17,6 +17,7 @@ This is the complete list. Nothing else is created, changed, or deleted.
 | `apply`, `go-live`, `dry-run`, `enable`, `disable` | Update job environment variables, cron expression, or replica timeout | The Container Apps job | copyctl.py |
 | `start` | Start one job execution | The Container Apps job | copyctl.py |
 | `revoke-source` | Remove the copy subnet from `networkAcls.virtualNetworkRules` | **Your existing source storage account** | copyctl.py |
+| `approve-source` | Approve this deployment's pending private endpoint connection | **Your existing source storage account** | copyctl.py |
 
 Only four rows touch resources you already own: three on the source storage
 account, and one optional `AcrPull` grant if you chose to host the image in your
@@ -32,9 +33,16 @@ Each job makes outbound connections to Azure Storage, Microsoft Entra, Microsoft
 Graph/SharePoint, the container registry holding the published image, Key Vault,
 and Azure Monitor. It has no inbound endpoint and no external control plane.
 
-The source storage account must have public network access enabled so its
-firewall and service endpoint can be used. Accounts reachable only through an
-existing private endpoint are outside this package's network model.
+A source storage account with public network access enabled is reached through
+its firewall and the copy subnet's service endpoint. An account that disables
+public network access is reached through a private endpoint the deployment
+creates in its own network when the job sets `source.privateEndpoint`. That
+endpoint is only a request until someone with a role on the storage account
+approves it — deploying alone never grants this workload access to the account
+— and it is read-path infrastructure in the copy deployment's resource group:
+nothing is created inside your network, and the account's own firewall settings
+are never changed. The `approve-source` row above is that one-time approval,
+equally available from the account's portal page.
 
 ## Identities and permissions
 

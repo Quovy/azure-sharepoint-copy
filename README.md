@@ -45,6 +45,7 @@ file moves until you explicitly activate it.
 ./copyctl.py list                     # what is deployed, and in which mode
 ./copyctl.py set-secret default       # hidden prompt for the Entra client secret
 ./copyctl.py grant-source default     # only if the source has a storage firewall
+./copyctl.py approve-source default   # only if the job uses a private endpoint
 ./copyctl.py start default            # run one dry-run execution now
 ./copyctl.py preview default          # how many files a dry run would copy
 ./copyctl.py status default           # mode, schedule, and recent executions
@@ -110,6 +111,40 @@ The new job arrives in dry-run mode with its schedule parked, the same as a
 fresh install, so finish with `set-secret`, `start`, `go-live`, and `enable` as
 above. `deploy` will not touch a job that already exists — use `apply` for that.
 
+## Sources that block public network access
+
+A storage account whose firewall merely defaults to Deny is handled by
+`grant-source`, which adds the copy subnet to the account's allow list. An
+account with **public network access disabled** ignores that list entirely;
+every request to its public endpoint fails with 403 `AuthorizationFailure`. For
+those accounts, set the flag in the job file:
+
+```json
+"source": { "...": "...", "privateEndpoint": true }
+```
+
+Deploying then creates, inside the deployment's own network: a private endpoint
+to the account, a `privatelink.file.core.windows.net` (or `.blob.`) private DNS
+zone linked to the copy network, and the DNS record that makes the container
+resolve the account to the endpoint's private address.
+
+Requesting the connection needs no permission on the storage account itself, so
+the endpoint arrives **Pending** and copies keep failing with the same 403
+until the account's owner approves it — once, on the account's *Private
+endpoint connections* page in the portal, or with
+`./copyctl.py approve-source <job>` for an operator who holds a role on the
+account. `./copyctl.py status <job>` shows the connection's state.
+
+The flag is honoured wherever jobs are deployed. A new job's `deploy` creates
+the endpoint alongside it. For a job that is already deployed, run
+`./copyctl.py deploy <job> --replace` after setting the flag: it redeploys that
+one job with its endpoint, leaving every other job untouched — the replaced
+job's schedule returns to parked and its secret to the placeholder, so finish
+with `set-secret` and `enable` again. Jobs sharing one storage account share
+one endpoint, created by whichever of them deploys first and left in place by
+the rest. `grant-source` is unnecessary for these accounts, and the portal form
+always deploys with the flag off — set it in the job file and use the CLI.
+
 ## What gets created
 
 Everything below is created in the resource group you deploy into, tagged
@@ -120,6 +155,9 @@ which defaults to `file-copy`.
 | --- | --- | --- | --- |
 | Virtual network | `Microsoft.Network/virtualNetworks` | `<baseName>-vnet` | `10.240.0.0/16` by default (`vnetAddressPrefix`) |
 | Subnet | (inside that VNet) | `container-apps` | `10.240.0.0/27` by default (`containerAppsSubnetPrefix`), delegated to `Microsoft.App/environments`, with a `Microsoft.Storage.Global` service endpoint |
+| Subnet | (inside that VNet) | `private-endpoints` | `10.240.0.32/27` by default (`privateEndpointSubnetPrefix`); holds private endpoints to source accounts, empty until a job sets `source.privateEndpoint` |
+| Private DNS zone — at most one per storage service | `Microsoft.Network/privateDnsZones` | `privatelink.file.core.windows.net`, `privatelink.blob.core.windows.net` | Only when some job sets `source.privateEndpoint`; linked to the VNet above |
+| Private endpoint — one per distinct source account | `Microsoft.Network/privateEndpoints` | `<baseName>-pe-<service>-<account>` | Only for jobs that set `source.privateEndpoint`; arrives Pending until the account's owner approves it |
 | Container Apps environment | `Microsoft.App/managedEnvironments` | `<baseName>-environment` | Consumption workload profile, not zone redundant, injected into the subnet above, logs to the workspace below |
 | Log Analytics workspace | `Microsoft.OperationalInsights/workspaces` | `<baseName>-logs` | `PerGB2018`, 90 day retention |
 | Key Vault | `Microsoft.KeyVault/vaults` | `<baseName>-<hash>` (24 chars) | Standard, RBAC authorization, soft delete with 7 day retention, no purge protection, public network access enabled |
@@ -158,8 +196,10 @@ creating each job, so a private registry will not work without it.
 - One single-tenant Microsoft Entra application per SharePoint site, with
   Microsoft Graph `Sites.Selected` granted admin consent, plus a `write` grant on
   that specific site.
-- The source storage account must allow public network access. Accounts
-  reachable only through an existing private endpoint are not supported.
+- A source storage account that allows public network access works as deployed;
+  one that disables it needs `source.privateEndpoint: true` in the job file and
+  a one-time connection approval by the account's owner. See
+  [Sources that block public network access](#sources-that-block-public-network-access).
 - `copyctl.py preview` additionally needs the `log-analytics` Azure CLI
   extension (`az extension add --name log-analytics`) and read access to the
   deployment's Log Analytics workspace. No other command reads that workspace,

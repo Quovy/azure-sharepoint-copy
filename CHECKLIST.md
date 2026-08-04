@@ -114,6 +114,18 @@ Pick one path.
 
   Skip this if the account's firewall is set to allow all networks.
 
+- [ ] If the source storage account **disables public network access**, the job
+      must have `source.privateEndpoint: true` (see README.md), and the pending
+      private endpoint connection must be approved by someone with a role on
+      the account:
+
+  ```bash
+  ./copyctl.py approve-source default
+  ```
+
+  The portal's *Private endpoint connections* page on the account works too.
+  `./copyctl.py status default` shows whether the connection is still pending.
+
 ## 4. Review a dry run
 
 - [ ] Run one execution and check it:
