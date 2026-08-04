@@ -34,7 +34,8 @@ UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 NAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 STORAGE_ACCOUNT_PATTERN = re.compile(r"^[a-z0-9]{3,24}$")
 # An rclone --max-age duration: one whole number with a single unit suffix.
-TOP_UP_MAX_AGE_PATTERN = re.compile(r"^[0-9]{1,6}[mhd]$")
+# No leading zeros: app/transfer.sh rejects them, and the two must agree.
+TOP_UP_MAX_AGE_PATTERN = re.compile(r"^[1-9][0-9]{0,5}[mhd]$")
 
 # Fields the deployment template turns into container environment variables.
 # This mapping is the single definition of the runtime contract; app/transfer.sh
@@ -245,6 +246,11 @@ def load_job(path):
         fail(f"{label}.name must match its filename: expected '{path.stem}'.")
 
     source, destination, copy = raw["source"], raw["destination"], raw["copy"]
+    if isinstance(source, dict):
+        # Added after the first release. Job files written before it existed
+        # must keep validating, the same way the template tolerates old
+        # parameter files.
+        source.setdefault("topUpMaxAge", "")
     exact_keys(
         source,
         [
@@ -295,7 +301,7 @@ def load_job(path):
 
     top_up = text(source["topUpMaxAge"], f"{label}.source.topUpMaxAge", allow_empty=True)
     if top_up:
-        if not TOP_UP_MAX_AGE_PATTERN.fullmatch(top_up) or int(top_up[:-1]) < 1:
+        if not TOP_UP_MAX_AGE_PATTERN.fullmatch(top_up):
             fail(
                 f"{label}.source.topUpMaxAge must be a whole number of minutes, hours, or days, "
                 "like 90m, 48h, or 2d."

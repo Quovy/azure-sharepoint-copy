@@ -106,6 +106,13 @@ expect_failure("duplicate-include", {"default.json": duplicate}, "duplicate path
 expect_success("top-up-window", with_job(source__topUpMaxAge="48h"))
 expect_failure("top-up-bad-unit", with_job(source__topUpMaxAge="2w"), "minutes, hours, or days")
 expect_failure("top-up-zero", with_job(source__topUpMaxAge="0h"), "minutes, hours, or days")
+# transfer.sh rejects leading zeros, so copyctl must not accept them.
+expect_failure("top-up-leading-zero", with_job(source__topUpMaxAge="01h"), "minutes, hours, or days")
+
+# A job file written before topUpMaxAge existed must keep validating.
+pre_top_up = copy.deepcopy(JOB)
+del pre_top_up["source"]["topUpMaxAge"]
+expect_success("top-up-absent", {"default.json": pre_top_up})
 
 top_up_and_cutoff = copy.deepcopy(JOB)
 top_up_and_cutoff["source"]["topUpMaxAge"] = "48h"
