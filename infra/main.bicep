@@ -296,6 +296,12 @@ resource copyJobs 'Microsoft.App/jobs@2024-03-01' = [for (job, index) in jobs: {
               value: job.source.modifiedOnOrAfter
             }
             {
+              // Safe access rather than a direct reference: parameter files
+              // written before this field existed must keep deploying.
+              name: 'SOURCE_TOP_UP_MAX_AGE'
+              value: job.source.?topUpMaxAge ?? ''
+            }
+            {
               name: 'DEST_TENANT_ID'
               value: job.destination.tenantId
             }
@@ -330,6 +336,12 @@ resource copyJobs 'Microsoft.App/jobs@2024-03-01' = [for (job, index) in jobs: {
               // stays parked until copyctl.py enable installs this value.
               name: 'COPY_SCHEDULE_UTC'
               value: job.copy.scheduleUtc
+            }
+            {
+              // Mirrors replicaTimeout so the container can stop starting new
+              // transfers before the platform kills it mid-upload.
+              name: 'COPY_TIMEOUT_MINUTES'
+              value: string(job.copy.timeoutMinutes)
             }
             {
               name: 'AZURE_MANAGED_IDENTITY_CLIENT_ID'

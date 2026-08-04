@@ -84,6 +84,8 @@ SOURCE_PATH="${SOURCE_PATH:-}"
 DEST_PATH="${DEST_PATH:-}"
 SOURCE_INCLUDE_PATHS="${SOURCE_INCLUDE_PATHS:-[]}"
 SOURCE_MODIFIED_ON_OR_AFTER="${SOURCE_MODIFIED_ON_OR_AFTER:-}"
+SOURCE_TOP_UP_MAX_AGE="${SOURCE_TOP_UP_MAX_AGE:-}"
+COPY_TIMEOUT_MINUTES="${COPY_TIMEOUT_MINUTES:-}"
 
 case "$SOURCE_TYPE" in
   azure_files | adls_gen2) ;;
@@ -128,6 +130,29 @@ if [ -n "$SOURCE_MODIFIED_ON_OR_AFTER" ]; then
   case "$SOURCE_MODIFIED_ON_OR_AFTER" in
     ????-??-?? | ????-??-??T??:??:??Z) ;;
     *) fail "SOURCE_MODIFIED_ON_OR_AFTER_must_be_YYYY-MM-DD_or_UTC_timestamp" ;;
+  esac
+fi
+
+if [ -n "$SOURCE_TOP_UP_MAX_AGE" ]; then
+  # One whole number and one unit, matching copyctl.py's validation.
+  top_up_magnitude="${SOURCE_TOP_UP_MAX_AGE%?}"
+  case "${SOURCE_TOP_UP_MAX_AGE#"$top_up_magnitude"}" in
+    m | h | d) ;;
+    *) fail "SOURCE_TOP_UP_MAX_AGE_must_be_minutes_hours_or_days_like_48h" ;;
+  esac
+  case "$top_up_magnitude" in
+    "" | *[!0-9]* | 0*) fail "SOURCE_TOP_UP_MAX_AGE_must_be_minutes_hours_or_days_like_48h" ;;
+  esac
+  [ "$include_count" -eq 0 ] || fail "SOURCE_INCLUDE_PATHS_and_SOURCE_TOP_UP_MAX_AGE_cannot_be_combined"
+  [ -z "$SOURCE_MODIFIED_ON_OR_AFTER" ] || fail "SOURCE_MODIFIED_ON_OR_AFTER_and_SOURCE_TOP_UP_MAX_AGE_cannot_be_combined"
+fi
+
+if [ -n "$COPY_TIMEOUT_MINUTES" ]; then
+  # copyctl.py enforces 5..1440; anything below 5 would leave --max-duration
+  # too small to be meaningful (a value of 1 would compute to 0m, which
+  # rclone treats as disabled).
+  case "$COPY_TIMEOUT_MINUTES" in
+    "" | *[!0-9]* | 0* | [1-4]) fail "COPY_TIMEOUT_MINUTES_must_be_at_least_5_minutes" ;;
   esac
 fi
 
@@ -263,6 +288,26 @@ export RCLONE_CONFIG_DESTINATION_DISABLE_SITE_PERMISSION=true
 destination_remote="destination:"
 [ -z "$DEST_PATH" ] || destination_remote="${destination_remote}${DEST_PATH}"
 
+# Microsoft's documented way for a service to identify itself so SharePoint
+# throttles it less aggressively. The version segment is best-effort.
+rclone_version="$("$RCLONE_BIN" version 2>/dev/null | sed -n 's/^rclone \(v[0-9][0-9.]*\).*$/\1/p' | head -n 1)"
+user_agent="ISV|rclone.org|rclone"
+[ -z "$rclone_version" ] || user_agent="${user_agent}/${rclone_version}"
+
+# When the whole destination is in scope and provably empty, checking it file
+# by file is pure overhead. One listing decides; any files or any error mean
+# the normal comparing path runs. --retries stays at 1 in that mode because a
+# retried pass would re-upload everything it already sent.
+retries=3
+destination_is_empty=false
+if [ "$include_count" -eq 0 ] && [ -z "$SOURCE_TOP_UP_MAX_AGE" ]; then
+  if destination_listing="$("$RCLONE_BIN" lsf "$destination_remote" --max-depth 1 2>/dev/null)" &&
+    [ -z "$destination_listing" ]; then
+    destination_is_empty=true
+    retries=1
+  fi
+fi
+
 # `copy` never deletes at the destination. `sync` must never appear here.
 #
 # --ignore-size and --ignore-checksum are rclone's documented SharePoint
@@ -277,15 +322,30 @@ set -- copy "$source_remote" "$destination_remote" \
   --transfers "${RCLONE_TRANSFERS:-4}" \
   --contimeout 30s \
   --timeout 5m \
-  --retries 3 \
+  --retries "$retries" \
   --low-level-retries 10 \
   --onedrive-upload-cutoff 4Mi \
   --onedrive-chunk-size 10Mi \
   --ignore-size \
   --ignore-checksum \
+  --user-agent "$user_agent" \
   --stats 30s \
   --use-json-log \
   --log-level INFO
+
+[ "$destination_is_empty" = "false" ] || set -- "$@" --no-check-dest
+
+# Stop starting new transfers before the platform's replicaTimeout kills the
+# container mid-upload; in-flight transfers are allowed to finish. The margin
+# is a quarter of the timeout, at most 15 minutes.
+max_duration_minutes=""
+if [ -n "$COPY_TIMEOUT_MINUTES" ]; then
+  margin_minutes=$((COPY_TIMEOUT_MINUTES / 4))
+  [ "$margin_minutes" -le 15 ] || margin_minutes=15
+  [ "$margin_minutes" -ge 1 ] || margin_minutes=1
+  max_duration_minutes=$((COPY_TIMEOUT_MINUTES - margin_minutes))
+  set -- "$@" --max-duration "${max_duration_minutes}m" --cutoff-mode soft
+fi
 
 selection=folder
 if [ "$include_count" -gt 0 ]; then
@@ -307,6 +367,15 @@ fi
 if [ -n "$SOURCE_MODIFIED_ON_OR_AFTER" ]; then
   set -- "$@" --max-age "$SOURCE_MODIFIED_ON_OR_AFTER"
 fi
+if [ -n "$SOURCE_TOP_UP_MAX_AGE" ]; then
+  # A rolling window selects few files, so checking each candidate against the
+  # destination directly is far cheaper than listing the destination tree.
+  # --no-traverse must stay tied to this narrow filter: on a wide selection it
+  # is slower than a normal listing, which is why the fixed
+  # SOURCE_MODIFIED_ON_OR_AFTER cutoff above does not use it.
+  selection=top_up
+  set -- "$@" --max-age "$SOURCE_TOP_UP_MAX_AGE" --no-traverse
+fi
 if [ "$COPY_DRY_RUN" = "true" ]; then
   set -- "$@" --dry-run
 fi
@@ -321,6 +390,16 @@ if "$RCLONE_BIN" "$@"; then
   exit_code=0
 else
   exit_code=$?
+fi
+
+# Exit code 10 is rclone's --max-duration limit: the window closed with work
+# remaining, which the schedule handles by design on the next run. Reporting
+# it as a failure would also make the platform retry the replica immediately,
+# an unscheduled second window on top of the one that just finished.
+if [ "$exit_code" -eq 10 ] && [ -n "$max_duration_minutes" ]; then
+  printf 'transfer_window_exhausted job=%s max_duration=%sm remaining_files_continue_on_next_run\n' \
+    "$COPY_JOB_NAME" "$max_duration_minutes"
+  exit_code=0
 fi
 
 printf 'transfer_complete job=%s dry_run=%s exit_code=%s\n' \

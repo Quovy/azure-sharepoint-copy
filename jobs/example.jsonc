@@ -20,7 +20,15 @@
     // relative files and folders. Cannot be combined with modifiedOnOrAfter.
     "includePaths": [],
     // Optional YYYY-MM-DD cutoff on last-modified time, not creation time.
-    "modifiedOnOrAfter": ""
+    "modifiedOnOrAfter": "",
+    // Optional rolling window like "48h" (also "90m" or "2d"): copy only files
+    // modified within this long before each run, and skip listing the
+    // destination tree entirely. This keeps a frequent schedule fast on a large
+    // tree once an initial full copy exists. Size it to at least twice the
+    // schedule interval so one failed run cannot leave a gap, and keep a second
+    // job without it as a periodic full pass. Cannot be combined with
+    // includePaths or modifiedOnOrAfter.
+    "topUpMaxAge": ""
   },
   "destination": {
     "tenantId": "00000000-0000-4000-8000-000000000001",

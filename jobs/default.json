@@ -8,7 +8,8 @@
     "containerOrShare": "source-share",
     "path": "",
     "includePaths": [],
-    "modifiedOnOrAfter": ""
+    "modifiedOnOrAfter": "",
+    "topUpMaxAge": ""
   },
   "destination": {
     "tenantId": "00000000-0000-4000-8000-000000000001",
