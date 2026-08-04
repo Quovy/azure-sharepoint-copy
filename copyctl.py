@@ -1309,6 +1309,183 @@ def cmd_revoke_source(args):
     print(f"[{args.job}] " + ("Removed the copy subnet rule." if ok else "The subnet rule was already absent."))
 
 
+def cmd_check_source(args):
+    """Report which access layers between a job and its source account work.
+
+    Azure Storage answers most misconfigurations with the same 403, whether the
+    cause is a missing role, a firewall rule, disabled public access, or a
+    private endpoint arrangement this deployment does not participate in. These
+    read-only control-plane checks pull those layers apart. Checks the operator
+    lacks permission to run are reported as unknown, never as passed.
+    """
+    record = deployed_job(args.subscription, args.job, args.resource_group)
+    env = record["env"]
+    source_subscription = env.get("SOURCE_SUBSCRIPTION_ID", "")
+    source_group = env.get("SOURCE_RESOURCE_GROUP", "")
+    account = env.get("SOURCE_STORAGE_ACCOUNT", "")
+    service = "file" if env.get("SOURCE_TYPE") == "azure_files" else "blob"
+    account_id = (
+        f"/subscriptions/{source_subscription}/resourceGroups/{source_group}"
+        f"/providers/Microsoft.Storage/storageAccounts/{account}"
+    )
+    problems = []
+
+    def report(label, state, detail):
+        marker = {"ok": "ok      ", "FAIL": "FAIL    ", "unknown": "unknown ", "info": "info    "}[state]
+        print(f"  {marker}{label:<22} {detail}")
+        if state == "FAIL":
+            problems.append(label)
+
+    print(f"[{args.job}] Access layers for {service} account {account}\n")
+
+    expected_role = (
+        "Storage File Data Privileged Reader" if service == "file" else "Storage Blob Data Reader"
+    )
+    principal, ok = run(
+        "az", "identity", "show",
+        *subscription_args(args.subscription),
+        "--resource-group", record["resourceGroup"],
+        "--name", f"{record['resourceName']}-identity",
+        "--query", "principalId", "--output", "tsv", "--only-show-errors",
+        allow_failure=True,
+    )
+    if not ok or not principal:
+        report("job identity", "FAIL", f"managed identity {record['resourceName']}-identity was not found")
+    else:
+        report("job identity", "ok", principal)
+        assignments, ok = run(
+            "az", "role", "assignment", "list",
+            "--subscription", source_subscription,
+            "--assignee", principal,
+            "--all",
+            "--query", "[].{role: roleDefinitionName, scope: scope}",
+            "--output", "json", "--only-show-errors",
+            allow_failure=True,
+        )
+        if not ok:
+            report("role assignment", "unknown", "no permission to list role assignments in the source subscription")
+        else:
+            roles = sorted({
+                entry["role"]
+                for entry in json.loads(assignments or "[]")
+                if entry["scope"].lower().startswith(account_id.lower())
+            })
+            if expected_role in roles:
+                report("role assignment", "ok", f"{expected_role} on the source")
+            else:
+                report(
+                    "role assignment", "FAIL",
+                    f"expected '{expected_role}' on the source; found {', '.join(roles) or 'none'} "
+                    "- redeploy the template to recreate it",
+                )
+
+    subnet_id = subnet_id_for(record)
+    settings, ok = run(
+        "az", "storage", "account", "show",
+        "--subscription", source_subscription,
+        "--resource-group", source_group,
+        "--name", account,
+        "--query", "{public: publicNetworkAccess, action: networkRuleSet.defaultAction,"
+        " rules: networkRuleSet.virtualNetworkRules[].{id: virtualNetworkResourceId, state: state}}",
+        "--output", "json", "--only-show-errors",
+        allow_failure=True,
+    )
+    public = ""
+    if not ok:
+        report("network gate", "unknown", "no permission to read the storage account's settings")
+    else:
+        gate = json.loads(settings or "{}")
+        # An account created before the setting existed reports null, which the
+        # service treats as enabled.
+        public = gate.get("public") or "Enabled"
+        action = gate.get("action") or "Allow"
+        if public.lower() == "disabled":
+            report(
+                "network gate", "FAIL",
+                "public network access is disabled, and this deployment reaches the account "
+                "over its public endpoint - ask the account's owner to re-enable it",
+            )
+        elif action.lower() == "allow":
+            report("network gate", "ok", "the firewall allows all networks")
+        else:
+            rules = gate.get("rules") or []
+            matched = next((rule for rule in rules if rule["id"].lower() == subnet_id.lower()), None)
+            if matched is None:
+                report(
+                    "firewall rule", "FAIL",
+                    f"the copy subnet is not in the account's rules - run 'copyctl.py grant-source {args.job}'",
+                )
+            elif (matched.get("state") or "Succeeded") != "Succeeded":
+                report(
+                    "firewall rule", "FAIL",
+                    f"the copy subnet rule is in state {matched['state']} - "
+                    f"re-run 'copyctl.py grant-source {args.job}'",
+                )
+            else:
+                report("firewall rule", "ok", "the copy subnet is in the account's rules")
+            endpoints, ok = run(
+                "az", "network", "vnet", "subnet", "show",
+                "--ids", subnet_id,
+                "--query", "serviceEndpoints[].service", "--output", "json", "--only-show-errors",
+                allow_failure=True,
+            )
+            services = json.loads(endpoints or "[]") if ok else []
+            if not ok:
+                report("service endpoint", "unknown", "could not read the copy subnet")
+            elif any(item in ("Microsoft.Storage.Global", "Microsoft.Storage") for item in services):
+                report("service endpoint", "ok", "the copy subnet carries a storage service endpoint")
+            else:
+                report(
+                    "service endpoint", "FAIL",
+                    "the copy subnet has no storage service endpoint - "
+                    "redeploy the template to restore it",
+                )
+
+    # Informational: this deployment cannot create or use a private endpoint,
+    # but connections other systems requested still shape what can reach the
+    # account, and are the only path in once public access is disabled.
+    listing, ok = run(
+        "az", "network", "private-endpoint-connection", "list",
+        "--subscription", source_subscription,
+        "--resource-group", source_group,
+        "--name", account,
+        "--type", "Microsoft.Storage/storageAccounts",
+        "--output", "json", "--only-show-errors",
+        allow_failure=True,
+    )
+    if not ok:
+        report("private endpoints", "unknown", "no permission to list the account's private endpoint connections")
+    else:
+        connections = json.loads(listing or "[]")
+        states = []
+        approved = 0
+        for connection in connections:
+            properties = connection.get("properties") or connection
+            status = ((properties.get("privateLinkServiceConnectionState") or {}).get("status")) or "Unknown"
+            if status == "Approved":
+                approved += 1
+            states.append(f"{connection.get('name', '?')} ({status})")
+        if not connections:
+            report("private endpoints", "info", "none exist on this account")
+        else:
+            detail = f"{len(connections)} connection(s): " + ", ".join(states)
+            if public.lower() == "disabled" and not approved:
+                detail += " - none is approved, so nothing can reach this account until one is"
+            elif public.lower() == "disabled":
+                detail += (
+                    " - an approved endpoint can reach the account, but this deployment "
+                    "connects over the public endpoint and cannot use it"
+                )
+            report("private endpoints", "info", detail)
+
+    print()
+    if problems:
+        print(f"{len(problems)} layer(s) need attention: {', '.join(problems)}.")
+        sys.exit(1)
+    print("Every readable layer looks correct. If runs still fail with a 403, re-check any "
+          "layer reported as unknown with someone who can read the source subscription.")
+
+
 def cmd_set_secret(args):
     record = deployed_job(args.subscription, args.job, args.resource_group)
     if not record["vaultName"] or not record["secretName"]:
@@ -1503,6 +1680,12 @@ def build_parser():
     add("dry-run", cmd_dry_run, "Switch one job back to dry run.", needs_job=True)
     add("grant-source", cmd_grant_source, "Add the copy subnet to the source storage firewall.", needs_job=True)
     add("revoke-source", cmd_revoke_source, "Remove the copy subnet from the source storage firewall.", needs_job=True)
+    add(
+        "check-source",
+        cmd_check_source,
+        "Explain which access layers between a job and its source account work, and which do not.",
+        needs_job=True,
+    )
     return parser
 
 

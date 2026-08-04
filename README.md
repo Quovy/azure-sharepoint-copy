@@ -48,6 +48,7 @@ file moves until you explicitly activate it.
 ./copyctl.py start default            # run one dry-run execution now
 ./copyctl.py preview default          # how many files a dry run would copy
 ./copyctl.py status default           # mode, schedule, and recent executions
+./copyctl.py check-source default     # which access layer is failing, when runs 403
 ./copyctl.py go-live default          # dry run -> live, requires typed confirmation
 ./copyctl.py enable default           # activate the schedule
 ```

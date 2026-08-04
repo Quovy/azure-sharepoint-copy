@@ -17,6 +17,7 @@ This is the complete list. Nothing else is created, changed, or deleted.
 | `apply`, `go-live`, `dry-run`, `enable`, `disable` | Update job environment variables, cron expression, or replica timeout | The Container Apps job | copyctl.py |
 | `start` | Start one job execution | The Container Apps job | copyctl.py |
 | `revoke-source` | Remove the copy subnet from `networkAcls.virtualNetworkRules` | **Your existing source storage account** | copyctl.py |
+| `check-source` | Nothing - read-only diagnostic queries; writes nothing anywhere | (nothing) | copyctl.py |
 
 Only four rows touch resources you already own: three on the source storage
 account, and one optional `AcrPull` grant if you chose to host the image in your
