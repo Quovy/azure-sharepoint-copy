@@ -165,7 +165,13 @@ reason rather than copying anything.
 - Pause a job: `./copyctl.py disable <name>`. Resume: `./copyctl.py enable <name>`.
 - Return a job to dry run: `./copyctl.py dry-run <name>`.
 - Rebuild local job files on a new machine: `./copyctl.py pull`.
-- Add or remove a job, or change a source storage account: redeploy the template.
+- Add a job: write `jobs/<name>.json`, then `./copyctl.py validate` and
+  `./copyctl.py deploy <name>`. It creates that job alone and leaves every
+  deployed job, schedule, and stored credential as it is. The new job arrives in
+  dry-run mode with its schedule parked, so repeat steps 3 to 5 for it. Do not
+  redeploy the whole template to add a job: that parks every schedule and
+  returns every Key Vault secret to its placeholder.
+- Remove a job, or change a source storage account: redeploy the template.
 
 ## Removal
 

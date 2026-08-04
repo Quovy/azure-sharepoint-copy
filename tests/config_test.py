@@ -198,6 +198,117 @@ check(
     "the job file must win for fields it owns",
 )
 
+
+# --- deploy adds one job without redeploying the ones already there ---------
+DEPLOYED = {
+    "invoices": {
+        "name": "invoices",
+        "resourceName": "file-copy-invoices",
+        "resourceGroup": "rg-copy",
+        "location": "eastus",
+        "image": "example.invalid/copy@sha256:" + "a" * 64,
+        "environmentId": "/subscriptions/s/resourceGroups/rg-copy/providers/Microsoft.App/managedEnvironments/file-copy-environment",
+        "resourceId": "/subscriptions/s/resourceGroups/rg-copy/providers/Microsoft.App/jobs/file-copy-invoices",
+    }
+}
+SUBNET_ID = (
+    "/subscriptions/s/resourceGroups/rg-copy/providers/Microsoft.Network"
+    "/virtualNetworks/file-copy-vnet/subnets/container-apps"
+)
+
+
+def fake_az_json(*args):
+    if args[:3] == ("containerapp", "env", "show"):
+        return SUBNET_ID
+    if args[:4] == ("network", "vnet", "subnet", "show"):
+        return "10.240.0.0/27"
+    if args[:3] == ("network", "vnet", "show"):
+        return "10.240.0.0/16"
+    if args[:3] == ("containerapp", "job", "show"):
+        return None  # no private registry
+    raise AssertionError(f"unexpected az call: {args}")
+
+
+copyctl.az_json = fake_az_json
+settings = copyctl.deployment_settings(None, DEPLOYED)
+check("deploy-infers-base-name", settings["baseName"] == "file-copy", settings["baseName"])
+check(
+    "deploy-infers-network",
+    (settings["vnet"], settings["subnet"]) == ("10.240.0.0/16", "10.240.0.0/27"),
+    "a mistyped prefix would try to renumber the deployed network",
+)
+check(
+    "deploy-infers-running-image",
+    settings["image"] == DEPLOYED["invoices"]["image"],
+    "a new job must not land on a different image than the fleet runs",
+)
+check("deploy-infers-location", settings["location"] == "eastus", settings["location"])
+
+two_deployments = {
+    **DEPLOYED,
+    "reports": {**DEPLOYED["invoices"], "name": "reports", "resourceName": "file-copy-reports", "resourceGroup": "rg-other"},
+}
+try:
+    copyctl.deployment_settings(None, two_deployments)
+    refused = False
+except copyctl.CopyctlError:
+    refused = True
+check(
+    "deploy-refuses-ambiguous-deployment",
+    refused,
+    "guessing which deployment to extend could add a job to the wrong one",
+)
+
+mixed_images = {
+    **DEPLOYED,
+    "reports": {
+        **DEPLOYED["invoices"],
+        "name": "reports",
+        "resourceName": "file-copy-reports",
+        "image": "example.invalid/copy@sha256:" + "b" * 64,
+    },
+}
+check(
+    "deploy-refuses-to-guess-image",
+    copyctl.deployment_settings(None, mixed_images)["image"] == "",
+    "with no agreed image, deploy must ask rather than pick one for the new job",
+)
+
+
+def refuse_az_json(*args):
+    if args[:3] == ("containerapp", "job", "show"):
+        raise AssertionError("a supplied --registry-id must not be re-looked-up")
+    return fake_az_json(*args)
+
+
+copyctl.az_json = refuse_az_json
+supplied = "/subscriptions/other/resourceGroups/rg/providers/Microsoft.ContainerRegistry/registries/acr"
+check(
+    "deploy-honours-supplied-registry",
+    copyctl.deployment_settings(None, DEPLOYED, supplied)["registryId"] == supplied,
+    "the lookup only searches one subscription, so --registry-id must bypass it",
+)
+copyctl.az_json = fake_az_json
+
+document = copyctl.params_document(
+    [copy.deepcopy(JOB)], "file-copy", "10.240.0.0/16", "10.240.0.0/27", "example.invalid/copy@sha256:x", "", "eastus"
+)
+check(
+    "deploy-params-hold-one-job",
+    [entry["name"] for entry in document["parameters"]["jobs"]["value"]] == [JOB["name"]],
+    "an incremental deployment must mention only the job being added",
+)
+check(
+    "deploy-params-carry-location",
+    document["parameters"]["location"]["value"] == "eastus",
+    "omitting it would fall back to the resource group's location",
+)
+check(
+    "deploy-params-omit-empty-registry",
+    "containerRegistryResourceId" not in document["parameters"],
+    "an empty registry ID must not be sent as a parameter",
+)
+
 if failures:
     print("configuration tests FAILED", file=sys.stderr)
     for failure in failures:

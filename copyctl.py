@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -456,6 +457,7 @@ def discover(subscription, resource_group=None):
             "identityClientId": identity_client_id,
             "resourceName": record["name"],
             "resourceGroup": record["resourceGroup"],
+            "location": record.get("location", ""),
             "resourceId": record["id"],
             "environmentId": record["properties"]["environmentId"],
             "image": record["properties"]["template"]["containers"][0]["image"],
@@ -644,6 +646,100 @@ def deployed_job(subscription, name, resource_group=None):
     return jobs[name]
 
 
+def deployment_settings(subscription, deployed, registry_id=""):
+    """Read one deployment's shared template parameters back out of Azure.
+
+    Adding a job re-declares the network, the environment, and the vault beside
+    it. Those declarations are only harmless when every shared value matches
+    what is already deployed, so they are read from Azure rather than retyped:
+    a mistyped baseName would build a second deployment alongside the first, and
+    a mistyped address prefix would try to renumber a network other jobs run on.
+    """
+    groups = sorted({record["resourceGroup"] for record in deployed.values()})
+    if len(groups) > 1:
+        fail(
+            f"This subscription holds more than one deployment ({', '.join(groups)}). "
+            "Re-run with --resource-group to say which one the new job joins."
+        )
+    base_names = set()
+    for name, record in deployed.items():
+        suffix = f"-{name}"
+        if not record["resourceName"].endswith(suffix):
+            fail(
+                f"Deployed job '{name}' is named {record['resourceName']}, which does not "
+                "follow the '<baseName>-<job>' convention this command relies on."
+            )
+        base_names.add(record["resourceName"][: -len(suffix)])
+    if len(base_names) > 1:
+        fail(
+            f"Deployed jobs disagree about baseName ({', '.join(sorted(base_names))}). "
+            "Re-run with --resource-group to select a single deployment."
+        )
+    reference = deployed[sorted(deployed)[0]]
+    subnet_id = subnet_id_for(reference)
+    subnet = az_json(
+        "network", "vnet", "subnet", "show",
+        *subscription_args(subscription),
+        "--ids", subnet_id,
+        "--query", "addressPrefix",
+    )
+    vnet = az_json(
+        "network", "vnet", "show",
+        *subscription_args(subscription),
+        "--ids", subnet_id.split("/subnets/")[0],
+        "--query", "addressSpace.addressPrefixes[0]",
+    )
+    if not subnet or not vnet:
+        fail("Could not read the deployed network's address prefixes.")
+    # Deploying a job on a different image than the fleet runs would leave one
+    # route on a version nobody reviewed, so the running image is the default.
+    images = {record["image"] for record in deployed.values()}
+    return {
+        "resourceGroup": reference["resourceGroup"],
+        "location": reference["location"],
+        "baseName": base_names.pop(),
+        "vnet": vnet,
+        "subnet": subnet,
+        "image": images.pop() if len(images) == 1 else "",
+        # An operator who supplies the registry is not asked to prove it exists
+        # here: the lookup only searches this subscription, and a registry in
+        # another one is exactly the case --registry-id is for.
+        "registryId": registry_id or registry_id_for(subscription, reference),
+    }
+
+
+def registry_id_for(subscription, record):
+    """The private registry backing a deployed job, if it uses one.
+
+    Jobs pulling from a private registry need AcrPull before Container Apps can
+    resolve the image, and the template grants it from the registry's resource
+    ID. Omitting it for a deployment that uses one would fail at creation time.
+    """
+    server = az_json(
+        "containerapp", "job", "show",
+        *subscription_args(subscription),
+        "--ids", record["resourceId"],
+        "--query", "properties.configuration.registries[0].server",
+    )
+    if not server:
+        return ""
+    name = server.split(".")[0]
+    found, ok = run(
+        "az", "acr", "show",
+        *subscription_args(subscription),
+        "--name", name,
+        "--query", "id",
+        "--only-show-errors", "--output", "tsv",
+        allow_failure=True,
+    )
+    if not ok or not found:
+        fail(
+            f"The deployed jobs pull from the private registry {server}, which was not found "
+            "in this subscription. Re-run with --registry-id <registry resource ID>."
+        )
+    return found
+
+
 def subnet_id_for(record):
     # --ids already carries the subscription, and az rejects it alongside the
     # other resource-selecting arguments.
@@ -806,23 +902,36 @@ def published_image():
     return value
 
 
-def cmd_params(args):
-    jobs = load_jobs()
-    image = args.image or published_image()
+def params_document(jobs, base_name, vnet, subnet, image, registry_id="", location=""):
     document = {
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
         "contentVersion": "1.0.0.0",
         "parameters": {
-            "baseName": {"value": args.base_name},
-            "vnetAddressPrefix": {"value": args.vnet},
-            "containerAppsSubnetPrefix": {"value": args.subnet},
+            "baseName": {"value": base_name},
+            "vnetAddressPrefix": {"value": vnet},
+            "containerAppsSubnetPrefix": {"value": subnet},
             "containerImage": {"value": image},
             "jobs": {"value": jobs},
         },
     }
-    if args.registry_id:
-        document["parameters"]["containerRegistryResourceId"] = {"value": args.registry_id}
-    validate_network(args.vnet, args.subnet)
+    if registry_id:
+        document["parameters"]["containerRegistryResourceId"] = {"value": registry_id}
+    if location:
+        document["parameters"]["location"] = {"value": location}
+    validate_network(vnet, subnet)
+    return document
+
+
+def cmd_params(args):
+    document = params_document(
+        load_jobs(),
+        args.base_name,
+        args.vnet,
+        args.subnet,
+        args.image or published_image(),
+        args.registry_id or "",
+    )
+    jobs = document["parameters"]["jobs"]["value"]
     rendered = json.dumps(document, indent=2) + "\n"
     if args.out:
         Path(args.out).write_text(rendered, encoding="utf-8")
@@ -971,6 +1080,102 @@ def cmd_preview(args):
     print(f"Errors           {stats.get('errors', 0)}")
     print(f"Elapsed          {stats.get('elapsedTime', 0):.1f}s")
     print("\nNothing was uploaded. This job is still in dry-run mode.")
+
+
+def cmd_deploy(args):
+    """Create one new job beside the ones already deployed.
+
+    The template describes a whole deployment, so re-rendering it from every
+    jobs/*.json and redeploying would rewrite each existing job: schedules go
+    back to parked and every Key Vault secret returns to its placeholder. This
+    command deploys a parameter set holding the new job alone. ARM's incremental
+    mode leaves out what the template does not mention, so the other jobs, their
+    secrets, and their schedules are never touched, while the shared network,
+    environment, and vault are re-declared exactly as deployed and change
+    nothing.
+    """
+    job = load_job_named(args.job)
+    template = ROOT / "infra" / "main.json"
+    if not template.exists():
+        fail(f"{template} is missing. Run this command from a checkout of the deployment package.")
+    try:
+        deployed = discover(args.subscription, args.resource_group)
+    except CopyctlError as error:
+        fail(
+            f"{error}\n"
+            "'deploy' adds a job to an existing deployment. For a first install, render every "
+            "job with 'copyctl.py params' and deploy it as README.md describes."
+        )
+    if args.job in deployed:
+        fail(
+            f"Job '{args.job}' is already deployed. "
+            f"Use 'copyctl.py apply {args.job}' to publish configuration changes to it."
+        )
+    settings = deployment_settings(args.subscription, deployed, args.registry_id or "")
+    image = args.image or settings["image"]
+    if not image:
+        fail(
+            "The deployed jobs do not all run the same image, so there is no safe default "
+            "for the new one. Re-run with --image <digest-pinned image>."
+        )
+    document = params_document(
+        [job],
+        settings["baseName"],
+        settings["vnet"],
+        settings["subnet"],
+        image,
+        settings["registryId"],
+        settings["location"],
+    )
+    print(
+        f"[{args.job}] Adding one job to the deployment in {settings['resourceGroup']}.\n"
+        f"  Existing jobs:  {', '.join(sorted(deployed))} (not included, so not changed)\n"
+        f"  Image:          {image}\n"
+        f"  Source:         {job['source']['storageAccount']}/{job['source']['containerOrShare']}\n"
+        f"  Destination:    {job['destination']['siteUrl']} / {job['destination']['library']}"
+    )
+    if not job["copy"]["dryRun"]:
+        confirm(
+            f"LIVE COPY {args.job}",
+            f"This job is configured to upload, not to dry run. "
+            f"Type 'LIVE COPY {args.job}' to deploy it live: ",
+        )
+    with tempfile.TemporaryDirectory() as directory:
+        parameters = Path(directory) / f"{args.job}-params.json"
+        parameters.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        common = (
+            "--resource-group", settings["resourceGroup"],
+            *subscription_args(args.subscription),
+            "--template-file", str(template),
+            "--parameters", f"@{parameters}",
+            # The default, stated so that a change of defaults could never turn
+            # this into a deployment that removes the jobs it does not mention.
+            "--mode", "Incremental",
+            "--only-show-errors",
+        )
+        print("\nPreviewing the change (az deployment group what-if). This takes a minute.\n")
+        print(run("az", "deployment", "group", "what-if", *common))
+        print(
+            "\nOnly resources for this job should be marked Create, plus role assignments "
+            "on its source. Anything marked Modify or Delete on an existing job is a stop."
+        )
+        confirm(f"ADD {args.job}", f"\nType 'ADD {args.job}' to deploy: ")
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+        print("\nDeploying. Creating the job and its identity takes a few minutes.")
+        run(
+            "az", "deployment", "group", "create",
+            "--name", f"add-{args.job}-{stamp}",
+            *common,
+            "--output", "none",
+        )
+    mode = "dry-run mode" if job["copy"]["dryRun"] else "LIVE mode"
+    print(f"\n[{args.job}] Deployed in {mode} with its schedule parked.")
+    print(f"  ./copyctl.py set-secret {args.job}     # store the Entra client secret")
+    print(f"  ./copyctl.py grant-source {args.job}   # only if the source has a storage firewall")
+    print(f"  ./copyctl.py start {args.job}          # run one execution now")
+    if job["copy"]["dryRun"]:
+        print(f"  ./copyctl.py go-live {args.job}        # dry run -> live, after reviewing that run")
+    print(f"  ./copyctl.py enable {args.job}         # activate the schedule")
 
 
 def cmd_apply(args):
@@ -1255,6 +1460,24 @@ def build_parser():
     params.add_argument("--vnet", default="10.240.0.0/16")
     params.add_argument("--subnet", default="10.240.0.0/27")
     params.add_argument("--out", help="Write to this path instead of standard output.")
+
+    deploy = add(
+        "deploy",
+        cmd_deploy,
+        "Create one new job from jobs/JOB.json, leaving deployed jobs untouched.",
+        needs_job=True,
+    )
+    deploy.add_argument(
+        "--image",
+        help="Digest-pinned container image. Defaults to the image the deployed jobs already run.",
+    )
+    deploy.add_argument(
+        "--registry-id",
+        help=(
+            "Resource ID of a private Azure Container Registry holding the image. "
+            "Defaults to the registry the deployed jobs pull from."
+        ),
+    )
 
     add("list", cmd_list, "List deployed copy jobs and their current mode.")
     add("status", cmd_status, "Show one job's configuration and recent executions.", needs_job=True)
