@@ -37,6 +37,11 @@
   "copy": {
     // "skip" or "replace_if_changed". Destination files are never deleted.
     "existingFiles": "skip",
+    // Whether folders with no copied files are still created at the
+    // destination. "auto" creates them except when modifiedOnOrAfter is set,
+    // where they would mirror the whole tree as empty folders. "always" and
+    // "never" override that in either direction.
+    "emptyFolders": "auto",
     // Keep true until you have reviewed a dry-run execution for this job.
     "dryRun": true,
     // Five-field UTC cron. This example runs daily at 02:00 UTC. The schedule

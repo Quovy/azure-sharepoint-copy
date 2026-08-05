@@ -380,7 +380,7 @@
             "name": "containerImage",
             "type": "Microsoft.Common.TextBox",
             "label": "Container image",
-            "defaultValue": "ghcr.io/quovy/azure-sharepoint-copy@sha256:34b16f673fdfa72d716911a3f800c6a772a97cc94d5b65354b14e3761d6b6294",
+            "defaultValue": "ghcr.io/quovy/azure-sharepoint-copy@sha256:e1eb2462aea9da6491772ce524eead754b86111488c1f2e468dbaa55ece17ac9",
             "toolTip": "A digest-pinned image reference. Leave the published default unless you imported it into your own registry.",
             "constraints": {
               "required": true,
@@ -414,7 +414,7 @@
       "containerAppsSubnetPrefix": "[steps('network').containerAppsSubnetPrefix]",
       "containerImage": "[steps('advanced').containerImage]",
       "containerRegistryResourceId": "[coalesce(steps('advanced').containerRegistryResourceId.id, '')]",
-      "jobs": "[map(steps('jobs').jobsGrid, (job) => parse(concat('{\"name\":\"', coalesce(job.name, ''), '\",\"source\":{\"type\":\"', coalesce(job.sourceType, 'azure_files'), '\",\"subscriptionId\":\"', subscription().subscriptionId, '\",\"resourceGroup\":\"', first(skip(split(steps('source').storageAccount.id, '/'), 4)), '\",\"storageAccount\":\"', steps('source').storageAccount.name, '\",\"containerOrShare\":\"', coalesce(job.containerOrShare, ''), '\",\"path\":\"', coalesce(job.sourcePath, ''), '\",\"includePaths\":[],\"modifiedOnOrAfter\":\"\"},\"destination\":{\"tenantId\":\"', subscription().tenantId, '\",\"clientId\":\"', coalesce(job.clientId, ''), '\",\"siteUrl\":\"', coalesce(job.siteUrl, ''), '\",\"library\":\"', coalesce(job.library, 'Documents'), '\",\"path\":\"', coalesce(job.destPath, ''), '\"},\"copy\":{\"existingFiles\":\"', steps('behavior').existingFiles, '\",\"dryRun\":true,\"scheduleUtc\":\"', coalesce(job.scheduleUtc, '0 2 * * *'), '\",\"timeoutMinutes\":', string(steps('behavior').timeoutMinutes), '}}')))]"
+      "jobs": "[map(steps('jobs').jobsGrid, (job) => parse(concat('{\"name\":\"', coalesce(job.name, ''), '\",\"source\":{\"type\":\"', coalesce(job.sourceType, 'azure_files'), '\",\"subscriptionId\":\"', subscription().subscriptionId, '\",\"resourceGroup\":\"', first(skip(split(steps('source').storageAccount.id, '/'), 4)), '\",\"storageAccount\":\"', steps('source').storageAccount.name, '\",\"containerOrShare\":\"', coalesce(job.containerOrShare, ''), '\",\"path\":\"', coalesce(job.sourcePath, ''), '\",\"includePaths\":[],\"modifiedOnOrAfter\":\"\"},\"destination\":{\"tenantId\":\"', subscription().tenantId, '\",\"clientId\":\"', coalesce(job.clientId, ''), '\",\"siteUrl\":\"', coalesce(job.siteUrl, ''), '\",\"library\":\"', coalesce(job.library, 'Documents'), '\",\"path\":\"', coalesce(job.destPath, ''), '\"},\"copy\":{\"existingFiles\":\"', steps('behavior').existingFiles, '\",\"emptyFolders\":\"auto\",\"dryRun\":true,\"scheduleUtc\":\"', coalesce(job.scheduleUtc, '0 2 * * *'), '\",\"timeoutMinutes\":', string(steps('behavior').timeoutMinutes), '}}')))]"
     }
   }
 }

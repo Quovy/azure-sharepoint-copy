@@ -109,6 +109,7 @@ run_transfer() {
   # or every such file is re-uploaded on every run.
   assert_contains "default" "$output" "--ignore-size"
   assert_contains "default" "$output" "--ignore-checksum"
+  assert_contains "default" "$output" "--create-empty-src-dirs"
   assert_contains "default" "$output" "dry_run=true"
   assert_missing "default" "$output" "sync"
   [ "$failures" -eq 0 ] || exit 1
@@ -163,6 +164,27 @@ run_transfer() {
   export SOURCE_MODIFIED_ON_OR_AFTER=2026-07-01
   output="$(run_transfer)" || report "max-age" "exited non-zero"
   assert_contains "max-age" "$output" "--max-age"
+  # A date cutoff filters files only; recreating every visited directory would
+  # mirror the full empty folder tree, so the flag must be dropped here.
+  assert_missing "max-age" "$output" "--create-empty-src-dirs"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+# --- emptyFolders overrides the automatic behaviour in both directions ------
+(
+  base_env
+  export SOURCE_MODIFIED_ON_OR_AFTER=2026-07-01
+  export COPY_EMPTY_FOLDERS=always
+  output="$(run_transfer)" || report "empty-folders-always" "exited non-zero"
+  assert_contains "empty-folders-always" "$output" "--create-empty-src-dirs"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+(
+  base_env
+  export COPY_EMPTY_FOLDERS=never
+  output="$(run_transfer)" || report "empty-folders-never" "exited non-zero"
+  assert_missing "empty-folders-never" "$output" "--create-empty-src-dirs"
   [ "$failures" -eq 0 ] || exit 1
 ) || failures=$((failures + 1))
 
@@ -196,6 +218,13 @@ expect_rejection() {
   base_env
   export COPY_DRY_RUN=True
   expect_rejection "boolean-case" "COPY_DRY_RUN_must_be_true_or_false"
+  [ "$failures" -eq 0 ] || exit 1
+) || failures=$((failures + 1))
+
+(
+  base_env
+  export COPY_EMPTY_FOLDERS=sometimes
+  expect_rejection "bad-empty-folders" "unsupported_COPY_EMPTY_FOLDERS"
   [ "$failures" -eq 0 ] || exit 1
 ) || failures=$((failures + 1))
 
