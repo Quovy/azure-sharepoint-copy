@@ -140,11 +140,24 @@ print("  tags       " + (", ".join(sorted((me or {}).get("tags") or {})) or "(no
 # exactly the tenant-mandated set a deny-without-tags policy cares about.
 outside = [keys(r) for r in rows if not is_ours(r)]
 if not outside:
+    print("  tag hint   nothing outside this deployment to compare against")
     sys.exit(0)
-common = set.intersection(*(set(o) for o in outside))
-missing = sorted(outside[0][k] for k in common - set(mine))
+
+# A simple majority rather than a unanimous one: incidental resources such as a
+# NIC or an OS disk are often left untagged, and requiring every one of them to
+# agree lets a single bare resource hide the whole mandated set.
+counts, casing = {}, {}
+for row in outside:
+    for lowered, original in row.items():
+        counts[lowered] = counts.get(lowered, 0) + 1
+        casing.setdefault(lowered, original)
+threshold = max(1, len(outside) // 2)
+missing = sorted(
+    casing[k] for k, n in counts.items() if n >= threshold and k not in mine
+)
+print("  tag hint   compared against %d resource(s) outside this deployment" % len(outside))
 if missing:
-    print("  MISSING    resources outside this deployment all carry: " + ", ".join(missing))
+    print("  MISSING    most of them also carry: " + ", ".join(missing))
     print("             a deny-without-tags policy would block updates to this job")
 ' || printf '  tags       unreadable\n'
 
