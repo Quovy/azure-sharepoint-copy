@@ -172,19 +172,44 @@ if missing:
   fi
 
   if [ "$park" = true ] && [ "$cron" != "$PARKED_CRON" ]; then
-    # Restating the existing tags keeps a request that a deny-without-tags
-    # policy will accept, when the job already carries what it demands.
-    tags="$(az containerapp job show -g "$rg" -n "$resource" \
-      --query "tags" -o json --only-show-errors 2>/dev/null |
-      python3 -c 'import json,sys; print(" ".join(f"{k}={v}" for k,v in (json.load(sys.stdin) or {}).items()))' 2>/dev/null || true)"
-    # shellcheck disable=SC2086
-    if az containerapp job update -g "$rg" -n "$resource" \
-      --cron-expression "$PARKED_CRON" ${tags:+--tags $tags} \
-      --only-show-errors -o none 2>/dev/null; then
+    # Restating the existing tags keeps a request a deny-without-tags policy
+    # will accept. Tag values routinely contain spaces and commas, so they are
+    # carried as separate array elements rather than one split-on-whitespace
+    # string - the latter turns "Contoso Inc, Ltd" into four bad arguments.
+    tag_args=()
+    while IFS= read -r -d '' pair; do
+      tag_args+=("$pair")
+    done < <(
+      az containerapp job show -g "$rg" -n "$resource" \
+        --query "tags" -o json --only-show-errors 2>/dev/null |
+        python3 -c '
+import json, sys
+for k, v in (json.load(sys.stdin) or {}).items():
+    sys.stdout.write("%s=%s\0" % (k, v))
+' 2>/dev/null || true
+    )
+
+    park_error=""
+    if [ ${#tag_args[@]} -gt 0 ]; then
+      park_error="$(az containerapp job update -g "$rg" -n "$resource" \
+        --cron-expression "$PARKED_CRON" --tags "${tag_args[@]}" \
+        --only-show-errors -o none 2>&1)" || park_error="${park_error:-unknown error}"
+    else
+      park_error="$(az containerapp job update -g "$rg" -n "$resource" \
+        --cron-expression "$PARKED_CRON" \
+        --only-show-errors -o none 2>&1)" || park_error="${park_error:-unknown error}"
+    fi
+
+    # Confirm against Azure rather than the exit status: a request can be
+    # accepted and still not be the schedule you asked for.
+    now="$(az containerapp job show -g "$rg" -n "$resource" \
+      --query "properties.configuration.scheduleTriggerConfig.cronExpression" \
+      -o tsv --only-show-errors 2>/dev/null || true)"
+    if [ "$now" = "$PARKED_CRON" ]; then
       printf '  parked     schedule will not fire until copyctl.py enable\n'
     else
-      printf '  FAILED     could not park; if a tag policy denied this, add the\n'
-      printf '             missing tags above in the portal Tags blade first\n'
+      printf '  FAILED     schedule is still %s\n' "${now:-unknown}"
+      [ -n "$park_error" ] && printf '             %s\n' "$(printf '%s' "$park_error" | head -3)"
       exit_code=1
     fi
   fi
