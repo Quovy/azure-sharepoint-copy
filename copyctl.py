@@ -999,6 +999,16 @@ def running_progress(subscription, record, execution):
     """
     if not execution:
         return ""
+    # Without the extension present, `az monitor log-analytics query` stops to
+    # ask whether to install it. Output here is captured, so that prompt is
+    # invisible and status appears to hang. Check first and stay quiet.
+    _, installed = run(
+        "az", "extension", "show", "--name", "log-analytics",
+        "--only-show-errors", "--output", "none",
+        allow_failure=True,
+    )
+    if not installed:
+        return ""
     try:
         workspace = az_json(
             "containerapp",
