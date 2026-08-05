@@ -10,6 +10,7 @@
 #   scripts/incident.sh --park          also park every schedule
 #   scripts/incident.sh -g RG --park    limit any of it to one deployment
 #   scripts/incident.sh --inherit-tags  copy the resource group's tags onto jobs
+#   scripts/incident.sh --upgrade       move jobs to this checkout's pinned image
 #
 # Reporting is the default because the survey is the part you want first: a
 # run that is already hours long is better understood than interrupted blind.
@@ -24,12 +25,14 @@ PARKED_CRON="0 0 31 2 *"
 stop=false
 park=false
 inherit=false
+upgrade=false
 rg_filter=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --stop | -s) stop=true ;;
     --park | -p) park=true ;;
     --inherit-tags) inherit=true ;;
+    --upgrade) upgrade=true ;;
     --resource-group | -g)
       shift
       [ $# -gt 0 ] || {
@@ -39,7 +42,7 @@ while [ $# -gt 0 ]; do
       rg_filter="$1"
       ;;
     --help | -h)
-      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -76,7 +79,7 @@ fi
 }
 
 deployments="$(printf '%s\n' "$jobs" | cut -f1 | sort -u | grep -c . || true)"
-if { [ "$stop" = true ] || [ "$park" = true ] || [ "$inherit" = true ]; } && [ "$deployments" -gt 1 ]; then
+if { [ "$stop" = true ] || [ "$park" = true ] || [ "$inherit" = true ] || [ "$upgrade" = true ]; } && [ "$deployments" -gt 1 ]; then
   printf 'Refusing to act on %s deployments at once. Re-run with -g to choose one:\n' "$deployments" >&2
   printf '%s\n' "$jobs" | cut -f1 | sort -u | sed 's/^/  /' >&2
   exit 2
@@ -206,6 +209,40 @@ for key, value in merged.items():
     fi
   fi
 
+  if [ "$upgrade" = true ]; then
+    # Read the image this checkout was released with rather than accepting one
+    # on the command line: a digest is 71 characters of hex that nobody should
+    # retype per job, and mistyping it deploys nothing recognisable.
+    target="$(python3 -c '
+import json, sys
+try:
+    doc = json.load(open("infra/main.parameters.json"))
+    print(doc["parameters"]["containerImage"]["value"])
+except Exception:
+    sys.exit(1)
+' 2>/dev/null || true)"
+    current="$(az containerapp job show -g "$rg" -n "$resource" \
+      --query "properties.template.containers[0].image" -o tsv --only-show-errors 2>/dev/null || true)"
+    if [ -z "$target" ]; then
+      printf '  FAILED     no pinned image in infra/main.parameters.json\n'
+      exit_code=1
+    elif [ "$current" = "$target" ]; then
+      printf '  image      already %s\n' "${target##*@}"
+    else
+      image_error="$(az containerapp job update -g "$rg" -n "$resource" \
+        --image "$target" --only-show-errors -o none 2>&1)" || true
+      now_image="$(az containerapp job show -g "$rg" -n "$resource" \
+        --query "properties.template.containers[0].image" -o tsv --only-show-errors 2>/dev/null || true)"
+      if [ "$now_image" = "$target" ]; then
+        printf '  upgraded   %s -> %s\n' "${current##*@}" "${target##*@}"
+      else
+        printf '  FAILED     image is still %s\n' "${current##*@}"
+        [ -n "$image_error" ] && printf '             %s\n' "$(printf '%s' "$image_error" | head -3)"
+        exit_code=1
+      fi
+    fi
+  fi
+
   if [ "$stop" = true ] && [ -n "$running" ]; then
     while IFS= read -r execution; do
       [ -n "$execution" ] || continue
@@ -262,7 +299,7 @@ for k, v in (json.load(sys.stdin) or {}).items():
   printf '\n'
 done <<<"$jobs"
 
-if [ "$stop" = false ] && [ "$park" = false ] && [ "$inherit" = false ]; then
+if [ "$stop" = false ] && [ "$park" = false ] && [ "$inherit" = false ] && [ "$upgrade" = false ]; then
   printf 'Report only. Re-run with --stop and/or --park to act.\n'
 fi
 
