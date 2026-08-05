@@ -986,6 +986,49 @@ def execution_duration(execution):
     return elapsed if finished else f"{elapsed}+"
 
 
+def running_progress(subscription, record, execution):
+    """One line of rclone's own statistics for an execution still in flight.
+
+    Only attempted while a run is Running: that is when the numbers change and
+    somebody is watching, and it keeps the common `status` call free of a Log
+    Analytics round trip.
+
+    Best effort throughout. Reading the workspace needs an extension and a role
+    that nothing else in this tool requires, so an operator without either sees
+    the ordinary status output rather than an error about a diagnostic.
+    """
+    if not execution:
+        return ""
+    try:
+        workspace = az_json(
+            "containerapp",
+            "env",
+            "show",
+            *subscription_args(subscription),
+            "--ids",
+            record["environmentId"],
+            "--query",
+            "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId",
+        )
+        if not workspace:
+            return ""
+        stats = None
+        for row in execution_outcome_rows(subscription, workspace, execution):
+            line = row.get("Log_s", "")
+            if '"stats"' in line:
+                stats = json.loads(line).get("stats") or stats
+    except (CopyctlError, json.JSONDecodeError, KeyError, TypeError):
+        return ""
+    if not stats:
+        return ""
+    return (
+        f"{stats.get('listed', 0):,} listed · "
+        f"{stats.get('totalTransfers', 0):,} file(s) · "
+        f"{human_bytes(stats.get('totalBytes', 0))} · "
+        f"{stats.get('errors', 0)} error(s)"
+    )
+
+
 def cmd_status(args):
     record = deployed_job(args.subscription, args.job, args.resource_group)
     env = record["env"]
@@ -1032,6 +1075,10 @@ def cmd_status(args):
             f"  {execution.get('started', '?'):<26} {execution.get('status', '?'):<12} "
             f"{execution_duration(execution):>8}  {execution.get('name', '')}"
         )
+        if execution.get("status") == "Running":
+            progress = running_progress(args.subscription, record, execution.get("name", ""))
+            if progress:
+                print(f"       {progress}")
 
 
 def cmd_start(args):
