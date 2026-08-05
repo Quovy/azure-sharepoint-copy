@@ -958,6 +958,34 @@ def cmd_list(args):
         print(f"{name:<20} {mode:<8} {schedule:<16} {record['resourceName']}")
 
 
+def execution_duration(execution):
+    """How long an execution took, or has been going.
+
+    The end time was already being fetched and thrown away, and it is the
+    number an operator is actually after: whether a run fits inside the gap
+    between two scheduled runs.
+    """
+    started, finished = execution.get("started"), execution.get("finished")
+    if not started:
+        return "?"
+    try:
+        begin = datetime.datetime.fromisoformat(started)
+        end = (
+            datetime.datetime.fromisoformat(finished)
+            if finished
+            else datetime.datetime.now(begin.tzinfo)
+        )
+    except ValueError:
+        return "?"
+    seconds = int((end - begin).total_seconds())
+    if seconds < 0:
+        return "?"
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    elapsed = f"{hours}h{minutes:02d}m" if hours else f"{minutes}m{seconds:02d}s"
+    return elapsed if finished else f"{elapsed}+"
+
+
 def cmd_status(args):
     record = deployed_job(args.subscription, args.job, args.resource_group)
     env = record["env"]
@@ -1000,7 +1028,10 @@ def cmd_status(args):
         print("  (none yet)")
         return
     for execution in executions:
-        print(f"  {execution.get('started', '?'):<26} {execution.get('status', '?'):<12} {execution.get('name', '')}")
+        print(
+            f"  {execution.get('started', '?'):<26} {execution.get('status', '?'):<12} "
+            f"{execution_duration(execution):>8}  {execution.get('name', '')}"
+        )
 
 
 def cmd_start(args):
