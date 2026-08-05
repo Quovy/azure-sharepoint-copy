@@ -19,6 +19,7 @@
   },
   "copy": {
     "existingFiles": "skip",
+    "emptyFolders": "auto",
     "dryRun": true,
     "scheduleUtc": "0 2 * * *",
     "timeoutMinutes": 360

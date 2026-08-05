@@ -258,7 +258,7 @@ def load_job(path):
         f"{label}.source",
     )
     exact_keys(destination, ["tenantId", "clientId", "siteUrl", "library", "path"], f"{label}.destination")
-    exact_keys(copy, ["existingFiles", "dryRun", "scheduleUtc", "timeoutMinutes"], f"{label}.copy")
+    exact_keys(copy, ["existingFiles", "emptyFolders", "dryRun", "scheduleUtc", "timeoutMinutes"], f"{label}.copy")
 
     source_type = text(source["type"], f"{label}.source.type")
     if source_type not in ("azure_files", "adls_gen2"):
@@ -305,6 +305,10 @@ def load_job(path):
     if existing_files not in ("skip", "replace_if_changed"):
         fail(f"{label}.copy.existingFiles must be skip or replace_if_changed.")
 
+    empty_folders = text(copy["emptyFolders"], f"{label}.copy.emptyFolders")
+    if empty_folders not in ("auto", "always", "never"):
+        fail(f"{label}.copy.emptyFolders must be auto, always, or never.")
+
     schedule = validate_cron(text(copy["scheduleUtc"], f"{label}.copy.scheduleUtc"), f"{label}.copy.scheduleUtc")
     timeout_minutes = whole_number(copy["timeoutMinutes"], f"{label}.copy.timeoutMinutes", 5, 1440)
 
@@ -336,6 +340,7 @@ def load_job(path):
         },
         "copy": {
             "existingFiles": existing_files,
+            "emptyFolders": empty_folders,
             "dryRun": boolean(copy["dryRun"], f"{label}.copy.dryRun"),
             "scheduleUtc": schedule,
             "timeoutMinutes": timeout_minutes,
@@ -767,6 +772,7 @@ def config_to_env(job):
     for env_name, (section, field) in ENV_FIELDS:
         values[env_name] = str(job[section][field])
     values["SOURCE_INCLUDE_PATHS"] = json.dumps(job["source"]["includePaths"], separators=(",", ":"))
+    values["COPY_EMPTY_FOLDERS"] = job["copy"]["emptyFolders"]
     values["COPY_DRY_RUN"] = "true" if job["copy"]["dryRun"] else "false"
     return values
 
@@ -804,6 +810,7 @@ def env_to_config(record):
         },
         "copy": {
             "existingFiles": env["COPY_EXISTING_FILES"],
+            "emptyFolders": env.get("COPY_EMPTY_FOLDERS", "auto"),
             "dryRun": env.get("COPY_DRY_RUN", "true") == "true",
             "scheduleUtc": env["COPY_SCHEDULE_UTC"],
             "timeoutMinutes": max(5, int(record["replicaTimeout"] or 300) // 60),

@@ -320,6 +320,10 @@ resource copyJobs 'Microsoft.App/jobs@2024-03-01' = [for (job, index) in jobs: {
               value: job.copy.existingFiles
             }
             {
+              name: 'COPY_EMPTY_FOLDERS'
+              value: job.copy.emptyFolders
+            }
+            {
               // ARM renders a raw boolean as 'True'/'False'; the runtime
               // requires lowercase, so the casing is fixed here.
               name: 'COPY_DRY_RUN'
