@@ -6,3 +6,10 @@ dist/
 .claude/
 AGENTS.md
 CLAUDE.md
+
+# Real job files name a customer and carry their tenant id, client id,
+# subscription id, storage account and SharePoint site URL. `copyctl.py new`
+# writes them here, and this repository is public. Only the two samples that
+# the tests and the documentation depend on are tracked.
+jobs/*.json
+!jobs/default.json
