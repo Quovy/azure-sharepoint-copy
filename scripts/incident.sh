@@ -116,17 +116,35 @@ while IFS=$'\t' read -r rg resource job; do
   # every later write to the job - including parking it. Comparing against the
   # rest of the resource group shows what is expected without naming it here.
   az resource list -g "$rg" --query "[].{name:name,tags:tags}" -o json --only-show-errors 2>/dev/null |
-    RESOURCE="$resource" python3 -c '
+    RESOURCE="$resource" WORKLOAD_TAG="$WORKLOAD_TAG" python3 -c '
 import json, os, sys
+
 rows = json.load(sys.stdin) or []
+workload = os.environ["WORKLOAD_TAG"].lower()
+
+def keys(row):
+    # Azure tag names are case-insensitive, so compare them folded or a
+    # template "workload" reads as missing beside a tenant "Workload".
+    return {k.lower(): k for k in (row.get("tags") or {})}
+
+def is_ours(row):
+    tags = {k.lower(): v for k, v in (row.get("tags") or {}).items()}
+    return str(tags.get("workload", "")).lower() == workload
+
 me = next((r for r in rows if r["name"] == os.environ["RESOURCE"]), None)
-mine = set((me or {}).get("tags") or {})
-others = [set(r.get("tags") or {}) for r in rows if r["name"] != os.environ["RESOURCE"]]
-common = set.intersection(*others) if others else set()
-print("  tags       " + (", ".join(sorted(mine)) or "(none)"))
-missing = sorted(common - mine)
+mine = keys(me or {})
+print("  tags       " + (", ".join(sorted((me or {}).get("tags") or {})) or "(none)"))
+
+# Compare against resources this template did not create. The rest of the
+# deployment carries the same two tags, so intersecting everything would hide
+# exactly the tenant-mandated set a deny-without-tags policy cares about.
+outside = [keys(r) for r in rows if not is_ours(r)]
+if not outside:
+    sys.exit(0)
+common = set.intersection(*(set(o) for o in outside))
+missing = sorted(outside[0][k] for k in common - set(mine))
 if missing:
-    print("  MISSING    every other resource here also has: " + ", ".join(missing))
+    print("  MISSING    resources outside this deployment all carry: " + ", ".join(missing))
     print("             a deny-without-tags policy would block updates to this job")
 ' || printf '  tags       unreadable\n'
 
