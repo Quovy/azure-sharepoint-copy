@@ -9,6 +9,7 @@
 #   scripts/incident.sh --stop          also stop executions still running
 #   scripts/incident.sh --park          also park every schedule
 #   scripts/incident.sh -g RG --park    limit any of it to one deployment
+#   scripts/incident.sh --inherit-tags  copy the resource group's tags onto jobs
 #
 # Reporting is the default because the survey is the part you want first: a
 # run that is already hours long is better understood than interrupted blind.
@@ -22,11 +23,13 @@ PARKED_CRON="0 0 31 2 *"
 
 stop=false
 park=false
+inherit=false
 rg_filter=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --stop | -s) stop=true ;;
     --park | -p) park=true ;;
+    --inherit-tags) inherit=true ;;
     --resource-group | -g)
       shift
       [ $# -gt 0 ] || {
@@ -73,7 +76,7 @@ fi
 }
 
 deployments="$(printf '%s\n' "$jobs" | cut -f1 | sort -u | grep -c . || true)"
-if { [ "$stop" = true ] || [ "$park" = true ]; } && [ "$deployments" -gt 1 ]; then
+if { [ "$stop" = true ] || [ "$park" = true ] || [ "$inherit" = true ]; } && [ "$deployments" -gt 1 ]; then
   printf 'Refusing to act on %s deployments at once. Re-run with -g to choose one:\n' "$deployments" >&2
   printf '%s\n' "$jobs" | cut -f1 | sort -u | sed 's/^/  /' >&2
   exit 2
@@ -161,6 +164,48 @@ if missing:
     print("             a deny-without-tags policy would block updates to this job")
 ' || printf '  tags       unreadable\n'
 
+  if [ "$inherit" = true ]; then
+    # Azure does not push resource group tags down to the resources inside it.
+    # Where a tenant policy demands tags the group already carries, copying
+    # them down is both the fix and a request that policy will accept.
+    group_tags="$(az group show -n "$rg" --query tags -o json --only-show-errors 2>/dev/null || true)"
+    own_tags="$(az containerapp job show -g "$rg" -n "$resource" --query tags -o json --only-show-errors 2>/dev/null || true)"
+    tag_args=()
+    while IFS= read -r -d '' pair; do
+      tag_args+=("$pair")
+    done < <(
+      GROUP_TAGS="$group_tags" OWN_TAGS="$own_tags" python3 -c '
+import json, os, sys
+
+def load(name):
+    try:
+        return json.loads(os.environ.get(name) or "{}") or {}
+    except json.JSONDecodeError:
+        return {}
+
+group, mine = load("GROUP_TAGS"), load("OWN_TAGS")
+# The jobs own tags win: workload and copyJob identify the deployment and
+# discovery depends on them. Folded comparison so a group "Workload" does not
+# arrive alongside the template lowercase "workload" as a second tag.
+folded = {k.lower() for k in mine}
+merged = dict(mine)
+merged.update({k: v for k, v in group.items() if k.lower() not in folded})
+for key, value in merged.items():
+    sys.stdout.write("%s=%s\0" % (key, value))
+' 2>/dev/null || true
+    )
+    if [ "${#tag_args[@]}" -eq 0 ]; then
+      printf '  tags       nothing to inherit; the resource group has no tags\n'
+    elif tag_error="$(az containerapp job update -g "$rg" -n "$resource" \
+      --tags "${tag_args[@]}" --only-show-errors -o none 2>&1)"; then
+      printf '  tagged     now carries %s tag(s), inherited from %s\n' "${#tag_args[@]}" "$rg"
+    else
+      printf '  FAILED     could not set tags\n'
+      printf '             %s\n' "$(printf '%s' "$tag_error" | head -3)"
+      exit_code=1
+    fi
+  fi
+
   if [ "$stop" = true ] && [ -n "$running" ]; then
     while IFS= read -r execution; do
       [ -n "$execution" ] || continue
@@ -217,7 +262,7 @@ for k, v in (json.load(sys.stdin) or {}).items():
   printf '\n'
 done <<<"$jobs"
 
-if [ "$stop" = false ] && [ "$park" = false ]; then
+if [ "$stop" = false ] && [ "$park" = false ] && [ "$inherit" = false ]; then
   printf 'Report only. Re-run with --stop and/or --park to act.\n'
 fi
 
