@@ -84,9 +84,10 @@ sh app/transfer.sh
 
 | What you see | What it means |
 | --- | --- |
-| `runtime_error=entra_rejected_the_client_id_or_secret` | Wrong tenant, client ID, or secret — or the secret has expired |
-| `runtime_error=graph_denied_or_failed_the_site_lookup...` | The application has no grant on that exact site, or `Sites.Selected` admin consent was never given |
+| `runtime_error=entra_rejected_the_client_id_or_secret` | Wrong tenant, client ID, or secret — or the secret has expired. The `entra_detail=` line above it carries Entra's `AADSTS` code, which says which one |
+| `runtime_error=graph_denied_or_failed_the_site_lookup...` | The application has no grant on that exact site, or `Sites.Selected` admin consent was never given. `graph_site_detail=accessDenied` means the grant or consent is missing; `itemNotFound` means `DEST_SITE_URL` points at a site that is not there |
 | `visible_libraries=...` then `runtime_error=document_library_not_found` | Site and grant are correct; the library name is wrong. The message lists the libraries the application can actually see — copy one of those |
+| `..._curl_exit=N` | curl's own status for the failed call: `22` means the service answered with an HTTP error and the `_detail` line holds its reason, `28` a timeout, `6` DNS, `35` TLS. Anything other than `22` is a network problem, not a permissions one |
 | `transfer_start ...` appears | **All three destination checks passed.** Everything after this point is source-side and will fail with placeholder values, which is expected |
 
 Reaching `transfer_start` means the SharePoint half of your configuration is
