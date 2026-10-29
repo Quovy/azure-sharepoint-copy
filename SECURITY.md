@@ -121,7 +121,7 @@ digest. Customers do not build it, so no deployment depends on package
 repositories or download endpoints being reachable or unchanged.
 
 - The Dockerfile frontend and Alpine base are pinned by digest.
-- rclone 1.74.4 is pinned, and its archive checksum is verified at build time.
+- rclone 1.75.2 is pinned, and its archive checksum is verified at build time.
 - The runtime is non-root and contains only Alpine, CA certificates, rclone,
   jq, curl, and the constrained wrapper.
 
