@@ -28,9 +28,9 @@ Open Azure Cloud Shell in **Bash** mode.
 **1. Install rclone.** Cloud Shell does not ship it. Match the pinned version:
 
 ```bash
-curl -fsSLO https://downloads.rclone.org/v1.74.4/rclone-v1.74.4-linux-amd64.zip
-unzip -q rclone-v1.74.4-linux-amd64.zip
-export PATH="$PWD/rclone-v1.74.4-linux-amd64:$PATH"
+curl -fsSLO https://downloads.rclone.org/v1.75.2/rclone-v1.75.2-linux-amd64.zip
+unzip -q rclone-v1.75.2-linux-amd64.zip
+export PATH="$PWD/rclone-v1.75.2-linux-amd64:$PATH"
 rclone version | head -1
 ```
 
