@@ -3,15 +3,15 @@
 # Built once by the publisher and distributed by digest. Customers never build
 # this image, so no customer deployment depends on the Alpine or rclone
 # download endpoints being reachable.
-FROM alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1 AS downloader
+FROM alpine:3.22.7@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f AS downloader
 
 ARG TARGETARCH=amd64
-ARG RCLONE_VERSION=1.74.4
+ARG RCLONE_VERSION=1.75.2
 
 RUN apk add --no-cache ca-certificates curl unzip \
     && case "${TARGETARCH}" in \
-         amd64) archive_arch="amd64"; archive_sha="fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d" ;; \
-         arm64) archive_arch="arm64"; archive_sha="97685285c9ad6a0cf17d5844115d2a67245af6444db672187074bd9c358de419" ;; \
+         amd64) archive_arch="amd64"; archive_sha="349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702" ;; \
+         arm64) archive_arch="arm64"; archive_sha="7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10" ;; \
          *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
        esac \
     && archive="rclone-v${RCLONE_VERSION}-linux-${archive_arch}.zip" \
@@ -22,7 +22,7 @@ RUN apk add --no-cache ca-certificates curl unzip \
     && unzip -q "/tmp/${archive}" -d /tmp/rclone \
     && install -m 0755 "/tmp/rclone/rclone-v${RCLONE_VERSION}-linux-${archive_arch}/rclone" /usr/local/bin/rclone
 
-FROM alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+FROM alpine:3.22.7@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f
 
 LABEL org.opencontainers.image.title="azure-sharepoint-copy" \
       org.opencontainers.image.description="One-way scheduled copy from Azure Files or ADLS Gen2 to a SharePoint document library." \
